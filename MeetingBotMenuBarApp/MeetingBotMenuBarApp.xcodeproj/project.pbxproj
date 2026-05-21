@@ -1,0 +1,286 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		8A1001012C00000100000001 /* MeetingBotMenuBarAppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1000012C00000100000001 /* MeetingBotMenuBarAppApp.swift */; };
+		8A1001022C00000100000001 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1000022C00000100000001 /* AppPaths.swift */; };
+		8A1001032C00000100000001 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1000032C00000100000001 /* Models.swift */; };
+		8A1001042C00000100000001 /* LaunchAgentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1000042C00000100000001 /* LaunchAgentManager.swift */; };
+		8A1001052C00000100000001 /* BotRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1000052C00000100000001 /* BotRuntimeStore.swift */; };
+		8A1001062C00000100000001 /* MeetingBotMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1000062C00000100000001 /* MeetingBotMenuView.swift */; };
+		8A1001072C00000100000001 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 8A1000072C00000100000001 /* AppIcon.icns */; };
+		8A1001082C00000100000001 /* EnvironmentHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1000082C00000100000001 /* EnvironmentHealth.swift */; };
+		8A1001092C00000100000001 /* MeetingLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1000092C00000100000001 /* MeetingLibraryStore.swift */; };
+		8A10010A2C00000100000001 /* MainWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A10000A2C00000100000001 /* MainWindowView.swift */; };
+		8A10010B2C00000100000001 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A10000B2C00000100000001 /* AppSettings.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		8A1000012C00000100000001 /* MeetingBotMenuBarAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingBotMenuBarAppApp.swift; sourceTree = "<group>"; };
+		8A1000022C00000100000001 /* AppPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPaths.swift; sourceTree = "<group>"; };
+		8A1000032C00000100000001 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		8A1000042C00000100000001 /* LaunchAgentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAgentManager.swift; sourceTree = "<group>"; };
+		8A1000052C00000100000001 /* BotRuntimeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotRuntimeStore.swift; sourceTree = "<group>"; };
+		8A1000062C00000100000001 /* MeetingBotMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingBotMenuView.swift; sourceTree = "<group>"; };
+		8A1000072C00000100000001 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Resources/AppIcon.icns; sourceTree = "<group>"; };
+		8A1000082C00000100000001 /* EnvironmentHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentHealth.swift; sourceTree = "<group>"; };
+		8A1000092C00000100000001 /* MeetingLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingLibraryStore.swift; sourceTree = "<group>"; };
+		8A10000A2C00000100000001 /* MainWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowView.swift; sourceTree = "<group>"; };
+		8A10000B2C00000100000001 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		8A1000302C00000100000001 /* 会议纪要助手.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "会议纪要助手.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		8A1000212C00000100000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		8A1000002C00000100000001 = {
+			isa = PBXGroup;
+			children = (
+				8A1000102C00000100000001 /* MeetingBotMenuBarApp */,
+				8A1000202C00000100000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		8A1000102C00000100000001 /* MeetingBotMenuBarApp */ = {
+			isa = PBXGroup;
+			children = (
+				8A1000012C00000100000001 /* MeetingBotMenuBarAppApp.swift */,
+				8A1000022C00000100000001 /* AppPaths.swift */,
+				8A1000032C00000100000001 /* Models.swift */,
+				8A1000042C00000100000001 /* LaunchAgentManager.swift */,
+				8A1000052C00000100000001 /* BotRuntimeStore.swift */,
+				8A1000062C00000100000001 /* MeetingBotMenuView.swift */,
+				8A1000082C00000100000001 /* EnvironmentHealth.swift */,
+				8A1000092C00000100000001 /* MeetingLibraryStore.swift */,
+				8A10000A2C00000100000001 /* MainWindowView.swift */,
+				8A10000B2C00000100000001 /* AppSettings.swift */,
+				8A1000072C00000100000001 /* AppIcon.icns */,
+			);
+			path = MeetingBotMenuBarApp;
+			sourceTree = "<group>";
+		};
+		8A1000202C00000100000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8A1000302C00000100000001 /* 会议纪要助手.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		8A1000402C00000100000001 /* MeetingBotMenuBarApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8A1000702C00000100000001 /* Build configuration list for PBXNativeTarget "MeetingBotMenuBarApp" */;
+			buildPhases = (
+				8A1000502C00000100000001 /* Sources */,
+				8A1000212C00000100000001 /* Frameworks */,
+				8A1000602C00000100000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MeetingBotMenuBarApp;
+			productName = "会议纪要助手";
+			productReference = 8A1000302C00000100000001 /* 会议纪要助手.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		8A1000802C00000100000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					8A1000402C00000100000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 8A1000902C00000100000001 /* Build configuration list for PBXProject "MeetingBotMenuBarApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 8A1000002C00000100000001;
+			productRefGroup = 8A1000202C00000100000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8A1000402C00000100000001 /* MeetingBotMenuBarApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		8A1000602C00000100000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8A1001072C00000100000001 /* AppIcon.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		8A1000502C00000100000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8A1001012C00000100000001 /* MeetingBotMenuBarAppApp.swift in Sources */,
+				8A1001022C00000100000001 /* AppPaths.swift in Sources */,
+				8A1001032C00000100000001 /* Models.swift in Sources */,
+				8A1001042C00000100000001 /* LaunchAgentManager.swift in Sources */,
+				8A1001052C00000100000001 /* BotRuntimeStore.swift in Sources */,
+				8A1001062C00000100000001 /* MeetingBotMenuView.swift in Sources */,
+				8A1001082C00000100000001 /* EnvironmentHealth.swift in Sources */,
+				8A1001092C00000100000001 /* MeetingLibraryStore.swift in Sources */,
+				8A10010A2C00000100000001 /* MainWindowView.swift in Sources */,
+				8A10010B2C00000100000001 /* AppSettings.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		8A1000912C00000100000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		8A1000922C00000100000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		8A1000712C00000100000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "会议纪要助手";
+				INFOPLIST_KEY_CFBundleIconFile = AppIcon;
+				INFOPLIST_KEY_CFBundleShortVersionString = 0.2.14;
+				INFOPLIST_KEY_CFBundleVersion = 16;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pgui.FeishuMeetingBotMenuBar;
+				PRODUCT_NAME = "会议纪要助手";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		8A1000722C00000100000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "会议纪要助手";
+				INFOPLIST_KEY_CFBundleIconFile = AppIcon;
+				INFOPLIST_KEY_CFBundleShortVersionString = 0.2.14;
+				INFOPLIST_KEY_CFBundleVersion = 16;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pgui.FeishuMeetingBotMenuBar;
+				PRODUCT_NAME = "会议纪要助手";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		8A1000902C00000100000001 /* Build configuration list for PBXProject "MeetingBotMenuBarApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8A1000912C00000100000001 /* Debug */,
+				8A1000922C00000100000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8A1000702C00000100000001 /* Build configuration list for PBXNativeTarget "MeetingBotMenuBarApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8A1000712C00000100000001 /* Debug */,
+				8A1000722C00000100000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 8A1000802C00000100000001 /* Project object */;
+}

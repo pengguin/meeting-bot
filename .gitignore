@@ -1,0 +1,69 @@
+# Local secrets and machine-specific config
+.env
+.env.*
+!.env.example
+*.local
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data and user meeting artifacts
+runtime/
+sessions/
+downloads/
+library/
+tmp/
+logs/
+*.log
+
+# Release artifacts and local archives
+dist/
+backups/
+*.dmg
+*.pkg
+*.zip
+*.tar
+*.tar.gz
+*.whl
+
+# Meeting materials and generated reports
+*.m4a
+*.mp3
+*.wav
+*.aac
+*.flac
+*.ogg
+*.opus
+*.mp4
+*.mov
+*.webm
+*.srt
+*.vtt
+*.docx
+*.pdf
+
+# macOS and Xcode local state
+.DS_Store
+*.xcuserstate
+*.xcresult
+DerivedData/
+*.dSYM/
+*.app/
+MeetingBotMenuBarApp/MeetingBotMenuBarApp.xcodeproj/xcuserdata/
+MeetingBotMenuBarApp/MeetingBotMenuBarApp.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Editor state
+.idea/
+.vscode/
+*.swp
+*.swo

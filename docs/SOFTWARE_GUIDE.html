@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>会议纪要助手 0.2.14 使用说明</title>
+  <style>
+    :root {
+      --text: #17202a;
+      --muted: #5b6470;
+      --line: #d8dde5;
+      --soft: #f6f8fb;
+      --blue: #1769ff;
+      --green: #159957;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.65;
+    }
+    main {
+      width: min(1080px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 36px 0 56px;
+    }
+    h1, h2, h3 { line-height: 1.25; }
+    h1 { margin: 0 0 12px; font-size: 32px; }
+    h2 { margin-top: 34px; font-size: 22px; }
+    h3 { margin-top: 22px; font-size: 17px; }
+    p.lead { color: var(--muted); font-size: 16px; max-width: 850px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--soft);
+    }
+    .shot {
+      min-height: 180px;
+      border: 1px dashed #b7c2d3;
+      border-radius: 8px;
+      background: linear-gradient(180deg, #fbfcfe, #f4f7fb);
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      text-align: center;
+      padding: 18px;
+    }
+    .steps li { margin-bottom: 8px; }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #eaf1ff;
+      color: var(--blue);
+      font-size: 13px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; }
+    code {
+      background: #f1f3f6;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+    .note {
+      border-left: 4px solid var(--green);
+      background: #f2fbf6;
+      padding: 12px 14px;
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>会议纪要助手 0.2.14 使用说明</h1>
+    <p class="lead">
+      会议纪要助手是一个本地运行的飞书会议助手。它接收飞书中的会议录音或转录文字，
+      在本机完成转写、说话人分离、纪要生成和文件导出，再把正式纪要回传到飞书。
+    </p>
+
+    <h2>界面概览</h2>
+    <div class="grid">
+      <section class="card">
+        <h3>状态栏弹窗</h3>
+        <div class="shot">
+          截图位：状态栏弹窗<br>
+          建议放入 <code>docs/assets/menu-popover.png</code>
+        </div>
+        <p>用于快速查看运行状态、当前任务、最近一次会议，并执行启动、停止、重启。</p>
+      </section>
+      <section class="card">
+        <h3>主界面概览</h3>
+        <div class="shot">
+          截图位：主界面概览<br>
+          建议放入 <code>docs/assets/main-overview.png</code>
+        </div>
+        <p>用于集中查看功能、状态、运行环境、最近会议和近期会议。</p>
+      </section>
+      <section class="card">
+        <h3>会议库</h3>
+        <div class="shot">
+          截图位：会议库<br>
+          建议放入 <code>docs/assets/library.png</code>
+        </div>
+        <p>支持搜索、标签、时间筛选、备注、真实会议时间、说话人标注、跨会议关联、本地新增会议，以及在详情页直接切换中文纪要类型。</p>
+      </section>
+      <section class="card">
+        <h3>正式纪要</h3>
+        <div class="shot">
+          截图位：正式纪要文件<br>
+          建议放入 <code>docs/assets/report-preview.png</code>
+        </div>
+        <p>默认生成 HTML、DOCX，可按需追加 PDF、MD。</p>
+      </section>
+    </div>
+
+    <h2>按钮说明</h2>
+    <table>
+      <thead>
+        <tr><th>位置</th><th>按钮</th><th>作用</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>状态栏弹窗</td><td>打开主界面</td><td>打开独立窗口。</td></tr>
+        <tr><td>状态栏弹窗</td><td>启动 / 停止 / 重启</td><td>控制后台机器人服务。</td></tr>
+        <tr><td>主界面概览</td><td>项目 / 会话 / 日志 / 错误</td><td>打开对应本地目录或错误日志。</td></tr>
+        <tr><td>主界面概览</td><td>夜览 / 白天</td><td>切换主界面配色。</td></tr>
+        <tr><td>最近一次会议</td><td>会议目录 / PDF / DOCX / HTML / MD</td><td>打开最新会议对应文件；缺失文件可右键补生成。</td></tr>
+        <tr><td>会议库</td><td>标签 / 时间</td><td>按标签、单日或时间段筛选会议。</td></tr>
+        <tr><td>会议库</td><td>新增会议</td><td>导入本地录音或转录稿，可指定会议类型和额外导出格式。</td></tr>
+        <tr><td>会议库</td><td>纪要类型</td><td>以中文显示当前模板，可直接下拉切换并按提示重新生成纪要文件。</td></tr>
+        <tr><td>主界面</td><td>设置</td><td>打开服务、外观、高级设置和纪要设置。</td></tr>
+      </tbody>
+    </table>
+
+    <h2>核心能力</h2>
+    <ul>
+      <li>接收飞书录音文件或已转录文字材料。</li>
+      <li>完成音频转换、说话人分离、语音转写和纪要生成。</li>
+      <li>支持重复材料复用，避免重复转写。</li>
+      <li>支持引用历史音频重新生成纪要，或强制重新转录。</li>
+      <li>支持会后补充说话人姓名并重新生成实名版纪要。</li>
+      <li>默认不在聊天中展开完整转录稿，只发送摘要和正式文件。</li>
+      <li>支持在本地会议库中新增会议，复用同一套转写和纪要工作流。</li>
+      <li>支持在会议详情页直接切换中文纪要类型，并在确认后重新生成文件。</li>
+      <li>支持一次新增多个标签，并在详情页统一保存或撤销修改。</li>
+      <li>会议详情页和概览页最近一次会议的 HTML、DOCX、MD、PDF 文件按钮在对应文件缺失时，可右键补生成该文件，生成后会切换为可打开状态。</li>
+      <li>主窗口底部状态栏会在概览页显示版本号，在会议库显示刷新按钮和会议汇总统计。</li>
+    </ul>
+
+    <h2>更新记录</h2>
+    <ul>
+      <li>修复补生成导出文件后，文件按钮仍显示为未生成状态、无法打开或唤出已生成文件右键菜单的问题。</li>
+      <li>概览页最近一次会议同步使用会议库最新文件扫描结果，补生成后也会切换为可打开状态。</li>
+      <li>主窗口底部新增统一状态栏，概览页放置版本号，会议库页放置刷新按钮和会议统计。</li>
+      <li>会议详情页未生成的 HTML、DOCX、MD、PDF 文件按钮恢复为灰化外观，避免和已生成文件按钮混淆。</li>
+      <li>概览页最近一次会议同步支持在缺失文件按钮右键执行生成文件。</li>
+      <li>状态栏 App 的周期刷新改为后台执行，减少长时间驻留后的状态栏、按钮和窗口拖动卡顿。</li>
+      <li>外观设置只保留声波、脉冲两套状态栏图标，以及白色、黑色两种图标颜色。</li>
+      <li>会议库列表中 Shift 改为范围选择，Command / Control 用于逐项多选。</li>
+      <li>会议右键首项改为打开文件夹；缺失的 HTML、DOCX、MD、PDF 可在文件按钮右键中直接生成。</li>
+      <li>升级会补充识别 Application Support 下的旧环境，并在复用虚拟环境前校验 Python 版本；Codex CLI 会校验登录状态。</li>
+      <li>会议生成完成后的状态栏提示图标，在点击状态栏、打开主界面或点击通知后恢复默认状态。</li>
+      <li>外观设置中的状态栏图标方案改为可视化图标按钮，状态栏图标白色、黑色会真实生效。</li>
+      <li>会议类型设置左侧列表加高，底部按钮改为类别、类型、删除，并在列表宽度内分散对齐。</li>
+      <li>设置页分区标题移到框体外，并比框体内正文略大。</li>
+      <li>自动外观会按当前 macOS 系统外观显示浅色或深色，避免标题栏和主界面颜色冲突。</li>
+      <li>设置页外观中可手动选择状态栏图标方案和颜色。</li>
+      <li>新增会议完成后会关闭新增窗口、定位到新纪要，并可按选择自动打开 HTML、DOCX、MD 或 PDF。</li>
+      <li>修复升级完成后未稳定驻留菜单栏、未自动打开主界面的问题。</li>
+      <li>主界面的外观同步、状态栏图标、新增会议、本地标签编辑和会议库文件夹交互完成一轮整理。</li>
+      <li>设置页补充版本号、保存位置快捷打开与迁移提示，纪要设置可新增类别。</li>
+      <li>覆盖安装遇到旧日志同步失败时，不再阻断核心数据升级。</li>
+      <li>迁移完成状态改为显式记录，失败后重试会继续补齐剩余数据。</li>
+      <li>已无需迁移时，安装脚本不会再直接以退出码 <code>1</code> 结束。</li>
+      <li>安装窗口会补齐末尾输出，状态栏图标也会随系统菜单栏明暗自动变色。</li>
+      <li>修复旧 <code>.env</code> 未填写可选保存位置时，覆盖安装会在迁移阶段提前中止的问题。</li>
+      <li>安装进度和失败提示更明确，能直接看到最近的安装信息。</li>
+      <li>后台支持目录改为 <code>~/Library/Application Support/meeting-bot</code>，后台日志改为 <code>~/Library/Logs/meeting-bot</code>。</li>
+      <li>覆盖安装会自动迁移旧 <code>~/Library/Application Support/meetin-bot</code>、<code>~/Library/Application Support/feishu-meeting-bot</code>、<code>~/meetin-bot</code>、<code>~/meeting-bot</code> 和 <code>~/feishu-meeting-bot</code>，并同步修正旧根目录下的默认保存位置。</li>
+      <li>新增会议修复了 <code>ffmpeg</code> 路径误判，失败信息也不再污染历史纪要详情。</li>
+      <li>HTML、DOCX 现在也可按需取消导出；重生成会保留已有导出组合。</li>
+      <li>会议库的文件夹菜单、焦点样式、标签区和新增会议按钮做了进一步整理。</li>
+      <li>显示模式入口移动到主界面右上角，可在自动、白天、夜览之间循环切换。</li>
+      <li>此前临时使用过 <code>~/meetin-bot</code>，当前版本已迁入标准 macOS 目录。</li>
+      <li>安装盘改为标准拖拽式布局，打开后即可按箭头把 App 拖入 <code>Applications</code>。</li>
+      <li>设置页新增本地录音和会议纪要保存位置；首次安装可直接定制，升级会沿用既有路径。</li>
+      <li>覆盖旧版后的界面统一显示为“更新准备”，并修复 Finder 启动时对 Homebrew 工具的误判。</li>
+      <li>后台载荷同步成功后会立即记为完成，不会因为可选工具提示而重复更新。</li>
+      <li>对外交付改为只提供安装盘。</li>
+      <li>会议库文件夹支持整块点击，并补齐方向键导航。</li>
+      <li>标签入口改为“新增标签”，可批量输入并同步到当前会议。</li>
+      <li>会议详情页新增“保存”和“撤销”。</li>
+      <li>右键文件入口改为二级列表，顺序与详情页一致。</li>
+      <li>设置页顺序、会议类型分类和外观联动完成整理。</li>
+      <li>安装升级流程补充版本提示，并改进 Codex CLI 的 Homebrew 路径识别。</li>
+    </ul>
+
+    <h2>典型使用方式</h2>
+    <ol class="steps">
+      <li>向飞书机器人发送录音文件，或直接上传转录文本。</li>
+      <li>机器人在本机处理后，把正式纪要文件回传到飞书。</li>
+      <li>如需复用历史音频，可引用原消息并发送“重新生成会议纪要”。</li>
+      <li>如需强制重跑语音识别，可引用音频并发送“重新转录”。</li>
+      <li>如需补充说话人姓名，可发送 <code>说话人1=张老师</code>。</li>
+    </ol>
+
+    <div class="note">
+      本软件默认把录音缓存保存在 <code>~/Library/Application Support/meeting-bot/downloads/</code>，
+      把会议音频副本、转录稿和纪要保存在 <code>~/Library/Application Support/meeting-bot/sessions/</code>；
+      这两个目录都可在设置中修改。飞书 App Secret、Hugging Face Token 等敏感配置只应写入本机 <code>.env</code>。
+    </div>
+  </main>
+</body>
+</html>

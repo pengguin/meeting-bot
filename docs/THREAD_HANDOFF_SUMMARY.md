@@ -1,0 +1,506 @@
+# 会议纪要助手 线程交接总结
+
+生成时间：2026-05-18（2026-05-20 追加 0.2.14 修订轮次）
+
+本文档用于帮助新线程中的 agent 快速理解本轮开发上下文、已完成工作、关键文件和后续开发入口。
+
+## 项目概览
+
+`~/Developer/meeting-bot` 是当前开发目录，用于开发一个本地运行的小型软件项目：通过飞书机器人接收会议录音或转录文本，在本机完成转写、说话人分离、会议纪要生成，并将正式纪要文件回传到飞书。旧路径 `~/feishu-meeting-bot` 目前保留为指向该目录的快捷入口。
+
+项目由两部分组成：
+
+- Python 后台服务：`bot.py`，通过飞书长连接接收消息，执行音频处理、转写、纪要生成、文件上传。
+- macOS 菜单栏 App：`MeetingBotMenuBarApp/`，用于查看后台状态、打开结果文件、启动/停止/重启服务、控制开机启动和系统通知。
+
+后台运行依赖：
+
+- 飞书开放平台企业自建应用。
+- Hugging Face Token，用于 pyannote 说话人分离。
+- faster-whisper，用于 ASR。
+- Codex CLI，用于会议分类和结构化纪要生成。
+- ffmpeg，用于音频转换。
+- LibreOffice，用于 DOCX 转 PDF。
+
+## 本轮主要工作
+
+### 0.2.14 修订轮次
+
+本轮修正 0.2.13 之后的文件按钮刷新和主窗口底部状态栏：
+
+- `MeetingLibraryStore.latestMarkdownSummary` 改为按“匿名版/实名版”导出标记识别 Markdown 纪要，避免标题为“讨论纪要”等文件名时补生成 MD 后仍被视为未生成，同时避免把用户上传的原始 `.md` 转录稿误当成导出纪要。
+- 概览页「最近一次会议」的文件按钮改为优先读取 `MeetingLibraryStore` 中对应 `MeetingRecord` 的最新文件路径，补生成后会跟随会议库扫描结果更新。
+- 主窗口底部新增统一状态栏；概览 tab 显示版本号，会议库 tab 显示刷新按钮和当前筛选/总会议数。
+
+### 0.2.13 修订轮次
+
+本轮修正 0.2.12 之后的文件按钮细节：
+
+- `LibraryFileButton` 对“文件未生成但可右键生成”的状态恢复灰化视觉，避免和已生成文件按钮显示一致；为保留右键菜单，按钮本身仍保持可接收右键事件，左键点击缺失文件时只提示无可打开文件。
+- 概览页「最近一次会议」的 HTML、DOCX、MD、PDF 文件按钮接入 `MeetingLibraryStore.generateExport`，会按最近会议 `sessionID` 找到对应 `MeetingRecord`，缺失文件时右键提供「生成文件」。
+- 概览页出现时会刷新会议库，保证最近会议可以映射到会议库记录。
+
+### 0.2.12 修订轮次
+
+本轮继续处理长时间驻留卡顿、状态栏图标选项、会议库选择和升级环境校验：
+
+- `BotRuntimeStore` 的周期刷新改为后台队列执行，主线程只接收结果；状态栏图标与弹窗尺寸更新增加 120ms 节流，并且仅在弹窗显示时重算弹窗尺寸，降低长时间驻留后 UI 被周期检查拖慢的风险。
+- 设置页「外观」移除第三类状态栏图标「状态徽标」和颜色策略「跟随菜单栏」；旧偏好值会自动回退到声波/白色。
+- 状态栏图标仍按任务状态临时切换为完成或异常图标，但点击状态栏、打开主界面、重新激活 App 或点击通知后，会把当前完成/异常状态标记为已读并恢复默认状态图标。
+- `MeetingLibraryStore.selectMeeting` 修正多选：`Shift` 现在按当前锚点到目标行做范围选择，`Command` / `Control` 才是逐项增减选择。
+- 会议列表右键首项改为「打开文件夹」。
+- 新增 `scripts/export_session_file.py`，可直接从既有 `report_named.json` / `report_anon.json` 补导出 HTML、DOCX、MD、PDF，不重新调用会议分析；会议详情文件按钮在缺失文件时右键只显示「生成文件」。
+- 安装/升级脚本和 App 路径增加旧 `~/Library/Application Support/meetin-bot`、`~/Library/Application Support/feishu-meeting-bot` 探测；历史 `.venv` 复用会先确认 Python >= 3.12，避免旧 Python 触发当前脚本语法错误。
+- `EnvironmentHealth.swift`、`scripts/preflight.sh`、`scripts/install.sh`、`scripts/doctor.sh` 对 Codex CLI 的检查从“命令存在”升级为 `codex login status` 登录状态校验。
+
+### 0.2.11 修订轮次
+
+本轮继续修正设置页外观和会议类型设置：
+
+- 状态栏图标颜色不再依赖 `NSStatusBarButton.contentTintColor`；白色/黑色模式会直接生成对应颜色的非模板 `NSImage`，跟随菜单栏模式才保留模板图交由 macOS 渲染。
+- 「外观 -> 状态栏图标 -> 图标方案」改为三枚可视化图标按钮，分别对应声波、脉冲、状态徽标，不再只显示文字。
+- 「纪要设置 -> 会议类型」左侧列表高度从 220 增至 320，底部按钮改为 `类别`、`类型`、`删除`，并按列表宽度分散对齐。
+- 设置页通用 `settingsCard` 改为标题在框体外显示，标题字号比框体内正文大 2pt，强化「版本」「环境检查」等分区层级。
+
+### 0.2.10 修订轮次
+
+本轮继续修正 0.2.9 发布后的外观和新增会议体验：
+
+- `AppAppearance` 在「自动」模式下不再返回空外观，而是读取当前 macOS `AppleInterfaceStyle` 后显式套用 Aqua 或 Dark Aqua；窗口标题栏、内容区和 SwiftUI `preferredColorScheme` 会保持同一套浅色/深色外观。
+- 设置页「外观」新增状态栏图标设置：`StatusBarIconStyle` 提供声波、脉冲、状态徽标三套 SF Symbols 图标方案；`StatusBarIconColorMode` 提供白色、黑色、跟随菜单栏三种颜色策略，默认白色。
+- `MeetingBotMenuBarAppApp.swift` 监听 `UserDefaults.didChangeNotification` 和系统外观变化，设置页调整图标方案或颜色后会立即刷新状态栏图标。
+- 新增会议完成后，`MeetingLibraryStore.createLocalMeeting` 会把 `LocalMeetingCreationResult` 回传给窗口；App 会关闭新增会议窗口、打开主界面，并依靠原有 `selectMeeting(sessionID:)` 定位到新纪要。
+- `NewMeetingWindowView` 增加「完成后打开纪要文件」下拉选项：不自动打开、HTML、DOCX、MD、PDF。选择某个格式时会自动保证该格式进入导出集合。
+
+### 0.2.9 修订轮次
+
+本轮检查了 `~/Developer/meeting-bot/backups/claude修改0.2.9` 中基于 0.2.8 的修复。备份中存在三类不能直接覆盖当前主线的问题：部分脚本仍写 `0.2.8`，App 内嵌资源路径仍有 `bootstrap/feishu-meeting-bot`，交接文档仍指向旧开发目录和已清理的旧打包流程。因此本轮只合并有效修复，并保留当前主线已整理的 `bootstrap/meeting-bot`、`docs/DEPENDENCIES.md`、拖拽式 DMG 发布流程和开发目录 `~/Developer/meeting-bot`。
+
+0.2.9 已合并的修复：
+
+- `scripts/install.sh` 扩展 Python 探测：新增 pyenv、python.org 官方安装包、安装目录与历史安装目录里的 `.venv`，并可在非在线强制模式下复用历史虚拟环境，减少重复联网安装。
+- `scripts/create_local_meeting.py` 新增进度 JSON 输出；`MeetingLibraryStore.createLocalMeeting` 改为流式读取 stdout/stderr，新增会议窗口可实时显示导入、转换、转写、生成纪要和导出阶段。
+- `scripts/regenerate_session.py` 新增 `--speaker-map-file`，重生成会议模板时会把会议库中已保存的说话人真实姓名写入实名版纪要，并补默认导出格式回退。
+- `MeetingLibraryStore.swift` 新增选中纪要对应文件夹高亮、带二次确认的文件夹删除逻辑、说话人姓名临时映射文件，以及本地新增会议进度解析。
+- `MainWindowView.swift` 补自动外观模式下的窗口外观同步；文件夹所在位置用灰色线框提示；删除文件夹可选择仅删除文件夹或连同纪要文件永久删除；标签芯片改为左对齐流式排布。
+- `LaunchAgentManager.swift` 和 `BotRuntimeStore.swift` 修复“启动服务”误改变“开机启动”状态的问题。
+- `AppPaths.swift`、`AppSettings.swift`、`EnvironmentHealth.swift` 合并 `.env` 解析入口为 `AppPaths.loadEnvValues()`。
+- `SetupWizard.swift` 统一首次启动向导各步骤内容区高度和顶部对齐，避免翻页错位。
+- 保留 `MeetingBotMenuBarAppApp.swift` 中当前主线的浅色状态栏图标设置，未采用备份中“跟随系统自动着色”的改动。
+- 用户文档、安装文档、更新记录和分享清单已更新到 0.2.9；新增 `docs/后台待办_安装与会议生成.md` 记录后台脚本修复细节。
+
+### 1. 飞书机器人交互优化
+
+已增强 `bot.py` 中的飞书交互逻辑：
+
+- 支持引用历史音频并回复“重新生成会议纪要”，默认复用已有转录结果。
+- 支持引用历史音频并回复“重新转录”，强制重新下载并完整重跑 ASR。
+- 支持上传或粘贴 `txt/md/markdown/csv/srt/vtt` 转录文字材料，跳过音频转写，直接生成纪要。
+- 默认不在飞书对话框展开完整转录稿，只发送摘要和正式纪要文件。
+- 增加重复材料复用逻辑：同一音频或文字已处理过时，跳过重复转写，仅重新汇编纪要和报告。
+- 兼容历史 session：即使旧 session 没有 `source_metadata.json`，也会尝试用音频或文本 hash 匹配历史结果。
+- 帮助文案已更新，明确说明可用命令和复用逻辑。
+
+相关文件：
+
+- `bot.py`
+- `meetingbot_config.py`
+- `report_export.py`
+
+关键函数：
+
+- `handle_text_message`
+- `process_audio_message`
+- `process_text_transcript_material`
+- `find_reusable_session`
+- `legacy_audio_source_matches`
+- `legacy_text_source_matches`
+- `generate_report_from_transcript`
+
+### 2. 报告输出优化
+
+已调整正式纪要文件生成逻辑：
+
+- 去掉 DOCX、HTML、MD 顶部的 `Feishu Meeting Bot ...` 蓝色标识。
+- DOCX 页脚保留页码字段：`第 PAGE / NUMPAGES 页`。
+- HTML 打印样式增加页码规则。
+- 修复 HTML 章节标题编号颜色问题：原先 `h2::first-letter` 只会让 `01` 中的 `0` 变蓝，现已改为使用 `.section-number` 包裹完整编号，因此 `01/02/...` 整体为蓝色。
+- 已重生成已有 session 下的 HTML 文件，验证输出包含 `.section-number`。
+
+相关文件：
+
+- `report_export.py`
+- `sessions/20260513_234841_a899b2/*.html` 已重生成过。
+
+### 3. Python 代码拆分
+
+原 `bot.py` 曾约 3467 行，维护成本较高。本轮做了第一阶段拆分：
+
+- `meetingbot_config.py`：集中配置、路径、模板常量。
+- `report_export.py`：集中 DOCX、Markdown、HTML、PDF 导出逻辑。
+- `bot.py`：保留飞书交互、ASR、说话人分离、任务主流程、状态写入、发送文件等协调逻辑。
+
+当前行数大致为：
+
+- `bot.py`：进一步缩减，当前主要保留飞书交互和主流程编排。
+- `report_export.py`：约 1186 行。
+- `meetingbot_config.py`：约 61 行。
+- `session_store.py`：集中 session 创建、复用、hash 和文本读取。
+- `transcript_material.py`：集中上传文本规范化和文本段落解析。
+
+后续仍可继续拆分：
+
+- `feishu_client.py`：飞书下载、上传、回复、引用消息解析。
+- `audio_pipeline.py`：音频转换、pyannote、faster-whisper、说话人对齐。
+- `runtime_status.py`：runtime/status 和 runtime/events 写入。
+
+### 4. 菜单栏 App 优化
+
+已优化 macOS 菜单栏 App：
+
+- 服务/任务白色卡片缩小。
+- “打开”区按钮更短，中文显示为“项目/会话/日志/错误”，仍指向原目录。
+- “会议目录”保持在 PDF 按钮前。
+- 增加“正在复用已有转录”的任务阶段显示。
+- 底部增加“开机启动”复选框，并接入 `launchctl enable/disable`。
+- “纪要完成后发送系统通知”保留。
+- 缩小弹窗高度，从 640 调整为 560，并减少内容间距，减少底部空白。
+- App 路径不再硬编码用户主目录；`0.2.5` 起后台支持目录改为 `~/Library/Application Support/meeting-bot`，日志目录改为 `~/Library/Logs/meeting-bot`，并把旧 `~/meetin-bot`、`~/meeting-bot`、`~/feishu-meeting-bot` 纳入升级迁移源。
+- 左键单击状态栏图标恢复为打开轻量气泡弹窗，右键菜单提供“打开主界面”和“退出”。
+- 新增“运行环境”简表，能看到 Python、`ffmpeg`、LibreOffice、Codex CLI 和核心配置是否就绪。
+- 独立主界面的“概览”改为更充分利用宽屏空间的面板布局，不再复用弹窗视图。
+- 新增“会议库”页：支持按内容搜索历史纪要、手工打标签、补充备注、人工标注说话人，并按主题/说话人查看跨 session 关联。
+- 主界面“近期会议”可直接跳转到会议库详情。
+- 主题关联从完全一致匹配升级为标签加近似标题匹配。
+- 会议库把时间筛选收进和标签同排的弹层，可按单日或时间段过滤；日期弹层会高亮已有会议日期。
+- 会议详情支持补充真实会议时间，和纪要生成时间分开保存；筛选与日历高亮优先使用真实会议时间。
+- 主界面顶部右侧新增自动 / 白天 / 夜览循环切换，设置页切回跟随系统外观时会立即刷新全部窗口。
+- 打开独立主界面时，App 会切换为普通应用模式并出现在 Dock；关闭主界面后回到仅状态栏模式。
+- 轻量弹窗不再使用滚动容器，遇到异常时会按内容增高；运行状态区改为“状态/任务/环境”三栏，并可从右上角直接打开主界面。
+- 设置页“运行状态”改为三项概览加独立更新时间，避免日期在右侧被挤成多行；设置窗口整体高度已收紧。
+- 主界面顶部三块统一为同一色系，第二行两块统一为另一色系；当 `ffmpeg` 异常时，环境卡会显示一个图标化启动按钮。
+- `ffmpeg` 健康检查已补 Homebrew 常见路径识别，避免 GUI App 因未继承终端 PATH 而误报缺失。
+- 会议库空结果时改用固定结构滚动区，避免搜索框、统计行和滚动条跳动。
+- 新增独立“设置”窗口中的四个主 tab：状态与服务、外观、高级设置、纪要设置；主界面顶部右侧也可直接打开设置。
+- 主界面顶部改为更明确的自定义标签栏；会议库中的“新增会议”改为失焦时仍保持可见的固定样式按钮。
+- 会议详情页的纪要类型现以中文显示，并可直接下拉切换模板；切换后会先询问是否重新生成纪要文件。
+- 会议详情页的快速标签改为更紧凑的自适应排布，减少少量标签时的横向空档。
+- 会议库支持从本地新增会议：可导入录音、转录稿，手动指定模板，并选择导出 HTML/DOCX/MD/PDF。
+- 新增 `scripts/create_local_meeting.py`，本地新增会议复用既有 session、转写、纪要和事件写入流程。
+- 新增 `report_generation.py` 中的公共会议分类能力，供重生成和本地新增会议共用。
+- `LaunchAgentManager` 的启动和重启逻辑已补 `launchctl enable` 自恢复，避免服务曾被禁用后只报 `Bootstrap failed: 5`。
+- 新增 `scripts/upgrade.sh` 与 `docs/UPGRADE_GUIDE.md`，并在打包时同步生成面向 `20260515_192856` 旧包的升级包。
+- 安装与打包脚本现会保留并排除本地 `library/`，避免升级时覆盖用户标签、文件夹和自定义会议模板，也避免把本机资料带进分享包。
+- 安装流程新增 `auto/reuse/offline/online` 四种依赖模式；`auto` 会自动复用现有环境、优先使用 `wheelhouse/`，再回退到在线安装。
+- 新增 `scripts/preflight.sh`、`scripts/build_wheelhouse.sh` 与安装器 `preinstall` 检查，安装前会校验 macOS、芯片、内存、磁盘和 Python 条件。
+- 新增首次启动配置向导 `SetupWizard.swift`：先做系统检查，再填写凭据，随后验证飞书、Hugging Face 和 Codex CLI，可用后直接启动服务。
+- 旧独立更新包流程已从当前开发目录清理；默认升级路径改为覆盖安装新版拖拽式 App，并由 App 首次启动时自动刷新后台组件。
+- 默认安装方式已改为拖拽式 DMG：用户将 `会议纪要助手.app` 拖入 `Applications`，首次打开后由 App 自动部署或升级 `~/Library/Application Support/meeting-bot`；若检测到旧 `~/meetin-bot`、`~/meeting-bot` 或 `~/feishu-meeting-bot`，会自动迁移用户数据并修正仍指向旧根目录的默认保存位置。
+- 新增首次启动安装引导 `BootstrapInstaller.swift`：App 内嵌后台载荷，按载荷版本自动判断是否需要首次部署或升级，并把日志写入 `~/Library/Logs/meeting-bot/首次启动安装.log`。
+- 默认分发物为 `会议纪要助手 0.2.11 安装盘.dmg`：其中只包含 `会议纪要助手.app`、`Applications` 快捷入口、`安装与升级说明.html` 和 `使用说明.html`。
+- 二合一安装器新增持久安装日志和桌面失败说明文件；升级场景若现有 `.venv` 可用，会跳过对系统 Python 的重复硬检查，避免 root 安装环境 PATH 过窄导致误判。
+- 芯片识别不再只依赖 `uname -m`，还会读取 `hw.optional.arm64`，避免 Apple Silicon 机器在兼容执行环境中被误判为 Intel。
+- `meetingbot_config.py` 现在会把 `ffmpeg` 和 Codex CLI 解析为实际可执行路径，避免从 Finder 启动时只拿到裸命令。
+- 新增会议失败不再把 stderr 写进所有历史纪要详情；本地会议页只展示精简后的当前错误。
+- 文本转录解析新增保留字段过滤，避免把“生成时间”“会议类型”等纪要元数据误识别为说话人。
+- 安装盘生成时会同步产出 `线程交接汇总`，便于下一轮开发接续。
+- `0.2.6` 修复了旧 `.env` 缺少可选保存位置键时覆盖安装在迁移阶段提前中止的问题，并把安装失败提示改为显示退出码和最近进度。
+- `0.2.7` 继续修复覆盖安装链路：旧日志迁移失败时不再阻断升级，迁移改用成功标记避免中断后漏迁剩余数据，已无需迁移时不会再误退，安装窗口会补读末尾输出，菜单栏图标也恢复为跟随系统明暗自动着色。
+- `0.2.8` 收束主界面和会议库体验：升级成功后稳定留驻并打开主界面，更新准备窗口固定尺寸并改为内部滚动以规避布局崩溃，外观同步修正，新增会议语法错误修复，新增未分类文件夹、文件夹多选合并与纪要拖拽归档，设置和标签编辑区同步补齐。
+- `0.2.9` 合并备份中的安装和会议库修复：安装可复用历史虚拟环境，本地新增会议显示实时进度，重生成模板会带入说话人实名，文件夹删除增加二次确认，自动外观和首次启动向导布局继续修正。
+- `0.2.10` 修正自动外观下标题栏与主界面颜色冲突，设置页新增状态栏图标方案和颜色设置，新增会议完成后自动关闭窗口并可按选择打开导出文件。
+- `0.2.11` 修正状态栏图标颜色实际渲染，图标方案设置改为可视化按钮，会议类型列表和设置页分区标题层级继续优化。
+
+相关文件：
+
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/AppPaths.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/BootstrapInstaller.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/MeetingBotMenuBarAppApp.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/MeetingBotMenuView.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/BotRuntimeStore.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/LaunchAgentManager.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/Models.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/EnvironmentHealth.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/MeetingLibraryStore.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/MainWindowView.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/SetupWizard.swift`
+- `scripts/preflight.sh`
+- `scripts/build_wheelhouse.sh`
+- `scripts/build_setup_package.sh`
+- `scripts/create_local_meeting.py`
+- `report_generation.py`
+
+注意事项：
+
+- `/Applications/会议纪要助手.app` 曾经还是旧版，最新版构建位于 `dist/会议纪要助手.app`。
+- 沙盒环境无法直接覆盖 `/Applications`，后续如果需要实际替换安装，需要用户授权或手工复制。
+
+### 5. 日志告警处理
+
+日志中反复出现：
+
+- `Class AVFFrameReceiver is implemented in both ...`
+- `Class AVFAudioReceiver is implemented in both ...`
+- `pkg_resources is deprecated`
+- `resource_tracker ... leaked semaphore`
+
+本轮在 `start_bot.sh` 做了运行层处理：
+
+- 使用 `PYTHONWARNINGS` 抑制部分 Python warning。
+- 对 stderr 中的 AVF 重复类告警做过滤，避免持续刷日志。
+
+这不是从根本上解决动态库冲突，只是减少日志噪声。根因大概率是 `av` wheel 内置 ffmpeg 动态库和 Homebrew ffmpeg 同时被加载。后续如果出现真实崩溃，应继续从 Python 包版本、`av`、`torchcodec`、Homebrew ffmpeg 链接关系排查。
+
+相关文件：
+
+- `start_bot.sh`
+
+### 6. 依赖清单和安装文档
+
+新增依赖清单和文档：
+
+- `requirements.txt`
+- `docs/DEPENDENCIES.md`
+- `.env.example`
+- `docs/SOFTWARE_GUIDE.html`
+- `docs/SOFTWARE_GUIDE.md`
+- `docs/INSTALLATION_GUIDE.md`
+- `docs/SHARE_CHECKLIST.md`
+- `tests/test_session_store.py`
+- `tests/test_transcript_material.py`
+- `tests/test_report_export.py`
+
+文档覆盖：
+
+- 软件用途和核心能力。
+- 面向普通使用者的 HTML 软件说明页。
+- 软件界面与主要按钮说明。
+- 飞书机器人使用方式。
+- macOS 菜单栏 App 功能。
+- 本地目录说明。
+- 新环境依赖准备。
+- 飞书开放平台配置步骤。
+- Hugging Face Token 配置。
+- 半自动安装流程。
+- 启动、查看日志、卸载、常见问题。
+- 基础回归测试入口。
+- 对外分享时应提供和禁止提供的材料。
+
+### 7. 拖拽式安装和发行打包
+
+当前保留脚本：
+
+- `scripts/install.sh`
+- `scripts/build_setup_package.sh`
+- `scripts/doctor.sh`
+- `MeetingBotMenuBarApp/build_release_app.sh`
+
+`scripts/install.sh` 在新环境中执行：
+
+- 将后台支持文件复制到 `$HOME/Library/Application Support/meeting-bot`。
+- 创建 `.venv`。
+- 安装 `requirements.txt`。
+- 生成 `.env` 模板。
+- 创建运行目录。
+- 构建或安装菜单栏 App。
+- 写入 `$HOME/Library/LaunchAgents/com.pgui.feishu-meeting-bot.plist`。
+- 支持 `--no-start`、`--install-dir`、`--skip-app-build`。
+- 若 `.env` 仍是占位配置，则跳过自动启动，避免在未完成配置时触发无效 bootstrap。
+- `scripts/doctor.sh` 可集中检查 Python、`ffmpeg`、LibreOffice、Codex CLI、`.env` 和 LaunchAgent。
+
+安装脚本不会自动填写：
+
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+- `HF_TOKEN`
+- Codex CLI 登录状态。
+
+`MeetingBotMenuBarApp/build_release_app.sh` 会生成内嵌后台载荷的 `dist/会议纪要助手.app`。
+`scripts/build_setup_package.sh` 会在 App 构建完成后生成拖拽式安装盘，并同步输出线程交接汇总。
+
+构建载荷会排除：
+
+- `.env`
+- `.venv`
+- `sessions/`
+- `downloads/`
+- `logs/`
+- `runtime/`
+- `library/`
+- `backups/`
+- `latest_session.txt`
+- `*.bak`
+- `bot_backup_*.py`
+
+包内包含：
+
+- Python 后台代码。
+- Swift 菜单栏 App 源码。
+- 已构建的 `dist/会议纪要助手.app`。
+- `.env.example`。
+- `requirements.txt`。
+- 软件说明、安装说明、依赖说明和分享清单。
+- 安装脚本和拖拽式安装盘构建脚本。
+
+## 当前重要文件清单
+
+### 后台服务
+
+- `bot.py`
+- `meetingbot_config.py`
+- `report_export.py`
+- `start_bot.sh`
+- `requirements.txt`
+- `.env.example`
+- `schemas/meeting_classification.schema.json`
+- `schemas/meeting_report.schema.json`
+
+### 菜单栏 App
+
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/AppPaths.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/MeetingBotMenuBarAppApp.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/MeetingBotMenuView.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/BotRuntimeStore.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/LaunchAgentManager.swift`
+- `MeetingBotMenuBarApp/MeetingBotMenuBarApp/Models.swift`
+- `MeetingBotMenuBarApp/build_release_app.sh`
+
+### 文档和安装
+
+- `docs/SOFTWARE_GUIDE.html`
+- `docs/SOFTWARE_GUIDE.md`
+- `docs/INSTALLATION_GUIDE.md`
+- `docs/SHARE_CHECKLIST.md`
+- `docs/DEPENDENCIES.md`
+- `docs/后台待办_安装与会议生成.md`
+- `scripts/install.sh`
+- `scripts/build_setup_package.sh`
+
+### 打包产物
+
+- `dist/会议纪要助手.app`
+- `dist/会议纪要助手 0.2.14 安装盘.dmg`
+- `dist/线程交接汇总 0.2.14.md`
+
+## 已执行验证
+
+0.2.14 本轮执行过以下检查：
+
+```bash
+python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
+bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhouse.sh scripts/doctor.sh scripts/install_optional_tools.sh scripts/preflight.sh scripts/upgrade.sh start_bot.sh
+python3 -m pytest tests
+bash scripts/preflight.sh
+bash scripts/doctor.sh
+bash MeetingBotMenuBarApp/build_release_app.sh
+bash scripts/build_setup_package.sh
+```
+
+验证结果：
+
+- Python 编译检查通过。
+- Shell 脚本语法检查通过。
+- 现有测试 `7 passed`。
+- 安装前检查可执行完成；当前机器仅有“无法读取物理内存”的提示级警告。
+- 自检完成，Codex CLI 登录状态通过。
+- 菜单栏 App 已重新构建，`Info.plist` 版本为 `0.2.14`，构建号为 `16`。
+- App 内嵌载荷路径为 `Contents/Resources/bootstrap/meeting-bot`，未生成旧 `bootstrap/feishu-meeting-bot`。
+- `scripts/build_setup_package.sh` 已在系统环境下成功生成 `dist/会议纪要助手 0.2.14 安装盘.dmg` 和 `dist/线程交接汇总 0.2.14.md`。
+- 发行包过滤规则已检查，不含敏感配置和运行数据。
+
+## 备份目录
+
+每次重要修改前均做过备份。相关备份目录：
+
+- `backups/20260514_optimization/`
+- `backups/20260514_startup_toggle/`
+- `backups/20260514_ui_deps_refactor/`
+- `backups/20260514_docs_installer/`
+- `backups/20260515_docs_refresh/`
+
+## 当前已知问题和风险
+
+### 1. LaunchAgent 状态曾出现不一致
+
+曾观察到：
+
+- `runtime/status.json` 显示 service running。
+- 日志显示后台在 `2026-05-14 16:16:30` 连接飞书成功。
+- 但 `launchctl print gui/501/com.pgui.feishu-meeting-bot` 一度返回找不到 service。
+
+后续需要在真实 macOS 会话中检查：
+
+```bash
+launchctl print gui/$(id -u)/com.pgui.feishu-meeting-bot
+launchctl print-disabled gui/$(id -u) | rg com.pgui.feishu-meeting-bot
+tail -f logs/bot_stdout.log
+tail -f logs/bot_stderr.log
+cat runtime/status.json
+```
+
+### 2. `/Applications` 中的 App 可能不是最新
+
+由于沙盒权限限制，无法稳定覆盖安装：
+
+`/Applications/会议纪要助手.app`
+
+当前最新版在：
+
+`dist/会议纪要助手.app`
+
+若用户实际使用 `/Applications` 中的旧 App，可能看不到最新 UI 和开机启动选框。后续需要安装新版 App：
+
+```bash
+ditto "$HOME/Library/Application Support/meeting-bot/dist/会议纪要助手.app" "/Applications/会议纪要助手.app"
+```
+
+必要时让用户手动复制。
+
+### 3. ffmpeg/av 重复动态库告警只是过滤日志
+
+`start_bot.sh` 现在过滤了相关告警，但没有根治动态库加载冲突。如果后续发生音频处理崩溃，应继续排查 Python `av`、Homebrew ffmpeg、torchcodec/pyannote 之间的依赖关系。
+
+### 4. `.env` 仍是本机私密配置
+
+当前工作区根目录 `.env` 含真实飞书和 Hugging Face 配置。发行包不会包含 `.env`，但任何后续展示、提交或分享都必须避免泄露该文件内容。
+
+### 5. 安装脚本依赖网络
+
+`scripts/install.sh` 会执行 pip 安装依赖。新环境需要能访问 PyPI/Hugging Face 等外部服务；如果网络受限，需要改为离线 wheelhouse 安装。
+
+## 建议后续开发任务
+
+1. 继续拆分 `bot.py`：
+   - `feishu_io.py`
+   - `audio_pipeline.py`
+   - `runtime_status.py`
+2. 为 `feishu` 输入输出链路和 `audio_pipeline` 增加更贴近真实消息流的集成测试。
+3. 继续收敛菜单栏弹窗与主界面之间的状态展示重复。
+4. 如果要分发给非开发用户，建议做签名/公证，减少 macOS 打开拦截。
+
+## 新线程建议切入点
+
+如果新 agent 要继续开发，建议按以下顺序：
+
+1. 阅读 `docs/SOFTWARE_GUIDE.md` 和 `docs/INSTALLATION_GUIDE.md`。
+2. 阅读 `meetingbot_config.py`、`report_export.py`、`bot.py` 的主流程函数。
+3. 运行静态检查：
+
+```bash
+.venv/bin/python -m py_compile bot.py report_export.py meetingbot_config.py
+bash -n scripts/install.sh scripts/build_setup_package.sh start_bot.sh
+```
+
+4. 如涉及 App，先运行：
+
+```bash
+bash MeetingBotMenuBarApp/build_release_app.sh
+```
+
+5. 如涉及安装包，运行：
+
+```bash
+bash scripts/build_setup_package.sh
+```
+
+6. 不要把 `.env`、`sessions/`、`downloads/`、`logs/`、`runtime/`、`backups/` 放进发行包或外发内容。

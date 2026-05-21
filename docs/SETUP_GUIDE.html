@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>会议纪要助手 0.2.14 安装与升级说明</title>
+  <style>
+    :root {
+      --text: #17202a;
+      --muted: #5b6470;
+      --line: #d8dde5;
+      --soft: #f6f8fb;
+      --blue: #1769ff;
+      --green: #159957;
+      --orange: #d97706;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.65;
+    }
+    main {
+      width: min(1040px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 36px 0 56px;
+    }
+    h1, h2, h3 { line-height: 1.25; }
+    h1 { margin: 0 0 12px; font-size: 32px; }
+    h2 { margin-top: 34px; font-size: 22px; }
+    h3 { margin-top: 20px; font-size: 17px; }
+    p.lead { color: var(--muted); max-width: 880px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--soft);
+    }
+    .note {
+      border-left: 4px solid var(--green);
+      background: #f2fbf6;
+      padding: 12px 14px;
+      margin-top: 16px;
+    }
+    .warn {
+      border-left-color: var(--orange);
+      background: #fff8ef;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; }
+    code {
+      background: #f1f3f6;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+    pre {
+      overflow-x: auto;
+      background: #111827;
+      color: #f9fafb;
+      padding: 14px;
+      border-radius: 8px;
+    }
+    ul, ol { padding-left: 22px; }
+    li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>会议纪要助手 0.2.14 安装与升级说明</h1>
+    <p class="lead">
+      该文档合并了安装、依赖和升级说明。默认分发物为
+      <code>会议纪要助手 0.2.14 安装盘.dmg</code>，其中包含可拖拽安装的 App、<code>Applications</code> 快捷入口和说明文档文件夹。
+    </p>
+
+    <h2>安装前准备</h2>
+    <div class="grid">
+      <section class="card">
+        <h3>系统条件</h3>
+        <ul>
+          <li>macOS 14 或更高版本</li>
+          <li>Apple Silicon Mac</li>
+          <li>至少 8GB 内存，建议 16GB</li>
+          <li>至少 8GB 可用磁盘空间，建议 12GB 以上</li>
+          <li>Python 3.12 或更高版本</li>
+        </ul>
+      </section>
+      <section class="card">
+        <h3>提前准备</h3>
+        <ul>
+          <li>飞书自建应用的 App ID 和 App Secret</li>
+          <li>Hugging Face Token</li>
+          <li>已登录的 Codex CLI</li>
+          <li><code>ffmpeg</code></li>
+          <li>LibreOffice</li>
+        </ul>
+      </section>
+    </div>
+
+    <h2>依赖说明</h2>
+    <table>
+      <thead>
+        <tr><th>类别</th><th>用途</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Python 虚拟环境</td><td>后台服务运行</td><td>安装器会自动复用、离线安装或在线创建。</td></tr>
+        <tr><td><code>ffmpeg</code></td><td>音频转换</td><td>把录音转换为后续分析所需格式。</td></tr>
+        <tr><td>LibreOffice</td><td>导出 PDF</td><td>把生成的 DOCX 转成 PDF。</td></tr>
+        <tr><td>Codex CLI</td><td>会议分类和纪要生成</td><td>需要提前完成登录。</td></tr>
+      </tbody>
+    </table>
+    <div class="note warn">
+      安装器会先检查系统条件。硬性条件不满足时会停止安装；缺少可选工具时会提示，但不一定阻止继续安装。
+    </div>
+
+    <h2>推荐安装方式</h2>
+    <ol>
+      <li>双击打开 <code>会议纪要助手 0.2.14 安装盘.dmg</code>。</li>
+      <li>窗口中左侧是 <code>会议纪要助手.app</code>，右侧是 <code>Applications</code> 文件夹，按中间箭头把 App 拖过去即可。</li>
+      <li>在“应用程序”中首次打开 App。App 会自动判断当前用户目录中是否已有安装：
+        <ul>
+          <li>没有：自动部署后台组件和运行环境。</li>
+          <li>已有：自动按保留数据的升级路径刷新后台文件。</li>
+        </ul>
+      </li>
+      <li>首次部署完成后，App 会继续进入首次启动向导；已有用户则直接进入主界面。</li>
+      <li>首次安装时，按向导填写凭据并完成可用性检查。</li>
+    </ol>
+
+    <h2>依赖安装策略</h2>
+    <table>
+      <thead>
+        <tr><th>模式</th><th>行为</th><th>适用场景</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>auto</code></td><td>复用现有环境，优先离线，再回退在线安装</td><td>默认模式</td></tr>
+        <tr><td><code>reuse</code></td><td>只复用现有虚拟环境</td><td>已装过且环境可用</td></tr>
+        <tr><td><code>offline</code></td><td>只从 <code>wheelhouse/</code> 离线安装</td><td>封闭网络</td></tr>
+        <tr><td><code>online</code></td><td>强制在线安装</td><td>需要重新准备依赖</td></tr>
+        <tr><td><code>managed-online</code></td><td>自动准备独立 Python 运行时，再创建专用虚拟环境</td><td>本机缺少 Python 3.12+</td></tr>
+      </tbody>
+    </table>
+
+    <h2>首次启动向导</h2>
+    <ol>
+      <li>检查系统环境。</li>
+      <li>确认本地录音和会议纪要保存位置；默认分别为 <code>downloads/</code> 和 <code>sessions/</code>，也可直接改成自定义目录。</li>
+      <li>填写飞书 App ID、App Secret、Hugging Face Token 等配置。</li>
+      <li>检查飞书接口、Hugging Face 模型访问和 Codex CLI 登录状态。</li>
+      <li>检查通过后即可启动后台服务。</li>
+    </ol>
+    <div class="note">
+      若只检测到低版本 Python，首次启动安装窗口会给出三种处理方式：自动在线安装独立 Python 运行时、
+      打开本地离线安装包，或直接指定机器上已经存在的 Python 可执行文件。自动在线安装会把运行时放在
+      当前用户目录中，并在项目内创建独立虚拟环境，不替换系统 Python。若你已有可用虚拟环境，也可以选择其中的
+      <code>bin/python</code>。
+    </div>
+    <div class="note">
+      若缺少 <code>ffmpeg</code>、LibreOffice 或 Codex CLI，首次启动安装窗口也会提示可自动补齐。
+      该流程会通过 Homebrew 安装缺失工具；若机器尚无 Homebrew，系统可能还会要求你完成一次额外确认。
+      Codex CLI 安装后仍需由本人完成登录。
+    </div>
+
+    <h2>升级说明</h2>
+    <p>
+      已安装用户仍然使用同一份 <code>安装盘.dmg</code> 即可。把新版 App 拖入
+      <code>Applications</code> 覆盖旧版后，再打开 App，程序会自动识别为升级，
+      并保留 <code>.env</code>、已有保存位置、历史会议、下载文件、独立日志目录、<code>library/</code> 和本地模板。
+      新版默认支持目录为 <code>$HOME/Library/Application Support/meeting-bot</code>，日志目录为
+      <code>$HOME/Library/Logs/meeting-bot</code>。如果旧版仍在
+      <code>$HOME/Library/Application Support/meetin-bot</code>、
+      <code>$HOME/Library/Application Support/feishu-meeting-bot</code>、<code>$HOME/meetin-bot</code>、
+      <code>$HOME/meeting-bot</code> 或 <code>$HOME/feishu-meeting-bot</code>，新版会自动迁移，并改写仍指向旧根目录的默认保存位置。
+      升级完成后会继续打开新版 App，并移除旧名称对应的旧应用包。
+    </p>
+    <div class="note">
+      若旧版本曾把后台服务禁用，当前版本在“启动”或“重启”时会先尝试恢复 LaunchAgent，再继续加载服务。
+    </div>
+
+    <h2>命令行备用方式</h2>
+    <pre><code>bash scripts/install.sh --dependency-mode auto
+bash scripts/doctor.sh
+bash scripts/upgrade.sh</code></pre>
+
+    <h2>常见检查</h2>
+    <ul>
+      <li>首次安装后，如需排查环境，可运行 <code>scripts/doctor.sh</code>。</li>
+      <li>后台服务配置位于 <code>$HOME/Library/LaunchAgents/com.pgui.feishu-meeting-bot.plist</code>。</li>
+      <li>若 <code>codex</code> 或 <code>ffmpeg</code> 不在默认 PATH 中，可在配置中填写绝对路径。</li>
+      <li>若首次启动安装失败，App 会显示错误，并把详细日志写入 <code>~/Library/Logs/meeting-bot/首次启动安装.log</code>。</li>
+      <li>芯片检查会同时识别原生 arm64 和具备 arm64 能力的 Apple Silicon 机器，避免兼容环境造成误判。</li>
+    </ul>
+  </main>
+</body>
+</html>

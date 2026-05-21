@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "properties": {
+    "template": {
+      "type": "string",
+      "enum": [
+        "customer_success",
+        "expert_consultation",
+        "general_meeting",
+        "interview_summary",
+        "legal_communication",
+        "management_meeting",
+        "parent_teacher_meeting",
+        "product_development",
+        "product_review",
+        "project_progress",
+        "recruitment_interview",
+        "research_discussion",
+        "sales_conversion",
+        "training_workshop"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "template",
+    "confidence",
+    "reason"
+  ],
+  "additionalProperties": false
+}
