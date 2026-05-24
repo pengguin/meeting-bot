@@ -57,6 +57,13 @@ app 退出不会影响它；即使直接 kill 进程，launchd 也会因 `KeepAl
 - Python：`pytest tests/` 7/7 通过（运行需提供占位环境变量
   `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `HF_TOKEN`）。
 
+## 版本号
+
+本次修复将 `build_release_app.sh` 的 `BUILD_NUMBER` 从 `16` 升至 `17`
+（版本仍为 `0.2.14`），以便与修复前的构建区分。使用
+`bash MeetingBotMenuBarApp/build_release_app.sh` 打包，追加 `--install`
+可同时安装到 `/Applications`。
+
 ## 涉及文件
 
 | 文件 | 改动 |
@@ -65,6 +72,7 @@ app 退出不会影响它；即使直接 kill 进程，launchd 也会因 `KeepAl
 | `MeetingBotMenuBarApp/MeetingBotMenuBarApp/EnvironmentHealth.swift` | 统一 PATH 构造并前置合并 |
 | `MeetingBotMenuBarApp/MeetingBotMenuBarApp/BotRuntimeStore.swift` | 新增退出时停服务逻辑 |
 | `MeetingBotMenuBarApp/MeetingBotMenuBarApp/MeetingBotMenuBarAppApp.swift` | 新增 `applicationWillTerminate` |
+| `MeetingBotMenuBarApp/build_release_app.sh` | build 号 16 → 17 |
 
 ## 备注
 
