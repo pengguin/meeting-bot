@@ -116,6 +116,18 @@ enum EnvironmentHealthChecker {
         )
     }
 
+    private static func environmentWithToolPaths() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let toolDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        let existing = environment["PATH"]?.split(separator: ":").map(String.init) ?? []
+        var combined = toolDirectories
+        for path in existing where !combined.contains(path) {
+            combined.append(path)
+        }
+        environment["PATH"] = combined.joined(separator: ":")
+        return environment
+    }
+
     private static func resolveExecutable(_ command: String) -> String? {
         guard !command.isEmpty else {
             return nil
@@ -135,9 +147,7 @@ enum EnvironmentHealthChecker {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         process.arguments = [command]
-        process.environment = ProcessInfo.processInfo.environment.merging(
-            ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
-        ) { current, _ in current }
+        process.environment = environmentWithToolPaths()
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -163,9 +173,7 @@ enum EnvironmentHealthChecker {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.environment = ProcessInfo.processInfo.environment.merging(
-            ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
-        ) { current, _ in current }
+        process.environment = environmentWithToolPaths()
 
         let pipe = Pipe()
         process.standardOutput = pipe

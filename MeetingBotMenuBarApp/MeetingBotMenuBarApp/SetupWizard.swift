@@ -281,6 +281,7 @@ final class SetupWizardStore: ObservableObject {
                 let launch = launchCommand(for: binary)
                 process.executableURL = launch.executableURL
                 process.arguments = launch.arguments
+                process.environment = Self.processEnvironmentWithToolPaths()
                 let pipe = Pipe()
                 process.standardOutput = pipe
                 process.standardError = pipe
@@ -301,6 +302,18 @@ final class SetupWizardStore: ObservableObject {
                 }
             }
         }
+    }
+
+    private nonisolated static func processEnvironmentWithToolPaths() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let toolDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        let existing = environment["PATH"]?.split(separator: ":").map(String.init) ?? []
+        var combined = toolDirectories
+        for path in existing where !combined.contains(path) {
+            combined.append(path)
+        }
+        environment["PATH"] = combined.joined(separator: ":")
+        return environment
     }
 
     private nonisolated static func launchCommand(for binary: String) -> (executableURL: URL, arguments: [String]) {
