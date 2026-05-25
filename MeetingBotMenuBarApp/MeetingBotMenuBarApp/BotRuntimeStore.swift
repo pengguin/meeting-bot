@@ -195,6 +195,19 @@ final class BotRuntimeStore: ObservableObject {
         }
     }
 
+    /// Synchronously stops the background LaunchAgent when the app terminates,
+    /// unless the user opted into launch-at-login (daemon mode). Without this,
+    /// the KeepAlive LaunchAgent keeps running and holding memory after the app quits.
+    func stopServiceOnTerminationIfNeeded() {
+        guard launchAgentManager.isLaunchAtLoginEnabled() == false else {
+            return
+        }
+        guard launchAgentManager.status() == .running else {
+            return
+        }
+        _ = launchAgentManager.stop()
+    }
+
     func setLaunchAtLoginEnabled(_ enabled: Bool) {
         guard launchAtLoginEnabled != enabled else {
             return

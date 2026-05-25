@@ -5,7 +5,7 @@ APP_NAME="会议纪要助手"
 EXECUTABLE_NAME="FeishuMeetingBot"
 BUNDLE_ID="com.pgui.FeishuMeetingBotMenuBar"
 APP_VERSION="0.2.14"
-BUILD_NUMBER="16"
+BUILD_NUMBER="17"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
