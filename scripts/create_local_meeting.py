@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +16,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Keep local meeting generation independent from pyannote's network telemetry.
+os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+
+from chinese_text import simplify_chinese
+from asr_runtime import asr_runtime_description, create_asr_model, transcribe_with_asr_model
+from diarization_runtime import configure_diarization_pipeline, run_diarization_pipeline
 from meetingbot_config import (
     ASR_LANGUAGE,
     ASR_MODEL,
@@ -41,6 +51,23 @@ from transcript_material import (
     create_text_segments_from_transcript,
     normalize_uploaded_transcript_text,
 )
+from transcription_progress import TranscriptionProgress, audio_duration_seconds
+
+
+def acquire_local_meeting_lock():
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    lock_handle = (RUNTIME_DIR / "local_meeting.lock").open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_handle.close()
+        raise RuntimeError("已有本地会议正在处理，请等待完成后再添加新的会议")
+
+    lock_handle.seek(0)
+    lock_handle.truncate()
+    lock_handle.write(str(os.getpid()))
+    lock_handle.flush()
+    return lock_handle
 
 
 def runtime_timestamp() -> str:
@@ -166,7 +193,58 @@ def diarize_audio(
     session_path: Path,
     diarization_pipeline,
 ) -> List[Dict]:
-    output = diarization_pipeline(load_waveform_for_pyannote(audio_path))
+    progress_state = {"step": "", "percent": -1, "updated_at": 0.0}
+    step_labels = {
+        "segmentation": "检测语音活动",
+        "speaker_counting": "估算说话人数",
+        "embeddings": "提取说话人特征",
+        "discrete_diarization": "整理说话人时间段",
+    }
+
+    def progress_hook(
+        step_name: str,
+        _artifact=None,
+        completed: Optional[int] = None,
+        total: Optional[int] = None,
+        **_kwargs,
+    ) -> None:
+        if completed is None or total is None or total <= 0:
+            return
+
+        percent = min(100, max(0, int(completed * 100 / total)))
+        now = time.monotonic()
+        same_step = progress_state["step"] == step_name
+        if (
+            same_step
+            and percent < progress_state["percent"] + 5
+            and now < progress_state["updated_at"] + 15
+        ):
+            return
+
+        progress_state.update(
+            {"step": step_name, "percent": percent, "updated_at": now}
+        )
+        label = step_labels.get(step_name, step_name)
+        message = f"正在进行说话人分离：{label} {percent}%"
+        emit_progress("diarization", message)
+        write_runtime_status(
+            "processing",
+            "diarization",
+            message,
+            session_path,
+        )
+
+    def on_device_fallback(_error: str) -> None:
+        message = "Apple GPU 不兼容当前音频处理步骤，已自动切换 CPU 继续"
+        emit_progress("diarization", message)
+        write_runtime_status("processing", "diarization", message, session_path)
+
+    output = run_diarization_pipeline(
+        diarization_pipeline,
+        load_waveform_for_pyannote(audio_path),
+        hook=progress_hook,
+        on_fallback=on_device_fallback,
+    )
     diarization = getattr(output, "exclusive_speaker_diarization", output.speaker_diarization)
     segments: List[Dict] = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
@@ -190,15 +268,21 @@ def transcribe_audio(
     session_path: Path,
     whisper_model,
 ) -> List[Dict]:
-    segments, _info = whisper_model.transcribe(
-        str(audio_path),
-        language=ASR_LANGUAGE if ASR_LANGUAGE else None,
-        vad_filter=True,
-        beam_size=5,
+    progress = TranscriptionProgress(
+        duration=audio_duration_seconds(audio_path),
+        update=lambda message: write_runtime_status(
+            "processing",
+            "transcribing",
+            message,
+            session_path,
+        ),
     )
+    progress.start()
+    segments, _info = transcribe_with_asr_model(whisper_model, audio_path)
     transcript_segments: List[Dict] = []
     for segment in segments:
-        text = segment.text.strip()
+        text = simplify_chinese(segment.text.strip())
+        progress.advance(float(segment.end))
         if text:
             transcript_segments.append(
                 {
@@ -209,6 +293,7 @@ def transcribe_audio(
             )
     if not transcript_segments:
         raise RuntimeError("转写结果为空")
+    progress.complete()
     (session_path / "transcript_segments.json").write_text(
         json.dumps(transcript_segments, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -262,7 +347,7 @@ def build_default_speaker_map(merged_segments: List[Dict], session_path: Path) -
             speakers.append(speaker)
     speaker_map = {speaker: f"说话人{index}" for index, speaker in enumerate(speakers, start=1)}
     if any(segment["speaker"] == "UNKNOWN" for segment in merged_segments):
-        speaker_map["UNKNOWN"] = "说话人未知"
+        speaker_map["UNKNOWN"] = "未知说话人"
     (session_path / "speaker_map.json").write_text(
         json.dumps(speaker_map, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -350,7 +435,6 @@ def create_session_from_transcript(
 
 
 def create_session_from_audio(title: str, audio_path: Path) -> tuple[Path, str, Dict[str, str]]:
-    from faster_whisper import WhisperModel
     from pyannote.audio import Pipeline
 
     session_path = create_session(audio_path)
@@ -367,8 +451,11 @@ def create_session_from_audio(title: str, audio_path: Path) -> tuple[Path, str, 
     analysis_audio = convert_audio_to_wav_16k_mono(session_audio, session_path)
 
     write_runtime_status("processing", "loading_models", "正在加载转写模型", session_path)
-    whisper_model = WhisperModel(ASR_MODEL, device="cpu", compute_type="int8")
+    whisper_model = create_asr_model()
+    emit_progress("loading_models", f"转写模型已启用加速：{asr_runtime_description()}")
     diarization_pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL, token=HF_TOKEN)
+    diarization_device = configure_diarization_pipeline(diarization_pipeline)
+    emit_progress("loading_models", f"说话人分离模型使用 {diarization_device.type.upper()} 运行")
 
     write_runtime_status("processing", "diarization", "正在进行说话人分离", session_path)
     diarization_segments = diarize_audio(analysis_audio, session_path, diarization_pipeline)
@@ -510,6 +597,7 @@ def main() -> None:
     if audio_path is not None and not audio_path.exists():
         raise RuntimeError("录音文件不存在")
 
+    lock_handle = acquire_local_meeting_lock()
     session_path: Optional[Path] = None
     try:
         if transcript_path is not None:
@@ -543,6 +631,9 @@ def main() -> None:
             session_path,
         )
         raise
+    finally:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        lock_handle.close()
 
 
 if __name__ == "__main__":

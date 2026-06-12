@@ -84,6 +84,7 @@ mkdir -p "$BOOTSTRAP_PAYLOAD_DIR"
 rsync -a \
   --exclude ".env" \
   --exclude ".venv" \
+  --exclude ".git" \
   --exclude ".pytest_cache" \
   --exclude "__pycache__" \
   --exclude ".DS_Store" \
@@ -109,6 +110,7 @@ echo "$APP_BUNDLE"
 
 if [[ "${1:-}" == "--install" ]]; then
     INSTALL_PATH="/Applications/$APP_NAME.app"
-    ditto "$APP_BUNDLE" "$INSTALL_PATH"
+    mkdir -p "$INSTALL_PATH"
+    rsync -a --delete "$APP_BUNDLE/" "$INSTALL_PATH/"
     echo "$INSTALL_PATH"
 fi

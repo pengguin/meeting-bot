@@ -208,6 +208,18 @@ HF_TOKEN=hf_replace_with_your_token
 CODEX_BIN=codex
 ```
 
+语音转写性能参数可选；Apple Silicon 推荐保留默认值：
+
+```bash
+ASR_MODEL=medium
+ASR_LANGUAGE=zh
+ASR_CPU_THREADS=16
+ASR_BATCH_SIZE=8
+ASR_BEAM_SIZE=5
+```
+
+其中 `ASR_CPU_THREADS` 和 `ASR_BATCH_SIZE` 控制 faster-whisper 的 CPU 并行与批量转写；增加数值会提高资源占用。说话人分离会自动优先使用 Apple GPU，无需额外配置。
+
 如果 `codex` 不在 LaunchAgent 的 PATH 中，建议填写绝对路径：
 
 ```bash
@@ -251,6 +263,7 @@ bash scripts/build_setup_package.sh
 脚本会：
 
 - 重新构建菜单栏 App。
+- 排除 `.git`、本地运行数据和密钥，并在完整安装时清理旧 App 资源残留。
 - 生成默认交付物 `dist/会议纪要助手 0.2.14 安装盘.dmg`。
 - 把安装与升级说明、使用说明和更新记录一并放入安装盘。
 - 同步在 `dist/` 下生成线程交接汇总。

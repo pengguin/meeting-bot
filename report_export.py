@@ -668,14 +668,14 @@ def add_speaker_mapping_table(
     speaker_map: Dict[str, str],
     named: bool,
 ) -> None:
-    add_section_heading(doc, "07", "说话人标注", "用于核对声纹标签和最终显示名称。")
+    add_section_heading(doc, "07", "说话人标注", "统一使用匿名标签或已标注姓名展示。")
 
     table = doc.add_table(rows=1, cols=2)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = "Table Grid"
     set_table_column_widths(table, [7.0, 9.9])
 
-    headers = ["原始声纹标签", "当前显示名称"]
+    headers = ["匿名标签", "当前显示名称"]
     for i, h in enumerate(headers):
         cell = table.rows[0].cells[i]
         set_cell_shading(cell, "F1F5F9")
@@ -693,7 +693,12 @@ def add_speaker_mapping_table(
         row = table.add_row()
         for cell in row.cells:
             set_cell_margins(cell, top=70, start=105, bottom=70, end=105)
-        add_text_to_cell(row.cells[0], raw, size=9, color="4B5563")
+        add_text_to_cell(
+            row.cells[0],
+            anonymous_speaker_label(raw, fallback=name),
+            size=9,
+            color="4B5563",
+        )
         add_text_to_cell(row.cells[1], name, size=9, color="111827")
 
     note = doc.add_paragraph()
@@ -706,6 +711,19 @@ def add_speaker_mapping_table(
     apply_run_style(r, size=8.8, color="6B7280")
 
     add_spacer(doc, 3)
+
+
+def anonymous_speaker_label(raw: str, fallback: str = "") -> str:
+    if raw == "UNKNOWN":
+        return "未知说话人"
+    if raw == "TEXT":
+        return "转录文本"
+
+    match = re.fullmatch(r"SPEAKER[_\s-]?(\d+)", raw, re.IGNORECASE)
+    if match:
+        return f"说话人{int(match.group(1)) + 1}"
+
+    return fallback or raw
 
 
 def add_report_notes(doc: Document, report: Dict) -> None:
@@ -897,9 +915,9 @@ def generate_formal_minutes_markdown(
         lines.append("")
 
     if speaker_map:
-        lines.extend(["## 07 说话人标注", "", "| 原始声纹标签 | 当前显示名称 |", "| --- | --- |"])
+        lines.extend(["## 07 说话人标注", "", "| 匿名标签 | 当前显示名称 |", "| --- | --- |"])
         for raw, name in speaker_map.items():
-            lines.append(f"| {md_cell(raw)} | {md_cell(name)} |")
+            lines.append(f"| {md_cell(anonymous_speaker_label(raw, fallback=name))} | {md_cell(name)} |")
         lines.append("")
 
     notes = report.get("report_notes", [])
@@ -1028,13 +1046,16 @@ def generate_formal_minutes_html(
         sections.append(section_html("06 发言人观点", table, "保留不同角色的主要观点，方便会后对齐。"))
 
     if speaker_map:
-        rows = "".join(f"<tr><td>{html_escape(raw)}</td><td>{html_escape(name)}</td></tr>" for raw, name in speaker_map.items())
+        rows = "".join(
+            f"<tr><td>{html_escape(anonymous_speaker_label(raw, fallback=name))}</td><td>{html_escape(name)}</td></tr>"
+            for raw, name in speaker_map.items()
+        )
         table = (
             '<div class="table-wrap"><table><thead><tr>'
-            "<th>原始声纹标签</th><th>当前显示名称</th>"
+            "<th>匿名标签</th><th>当前显示名称</th>"
             f"</tr></thead><tbody>{rows}</tbody></table></div>"
         )
-        sections.append(section_html("07 说话人标注", table, "用于核对声纹标签和最终显示名称。"))
+        sections.append(section_html("07 说话人标注", table, "统一使用匿名标签或已标注姓名展示。"))
 
     notes = report.get("report_notes", [])
     if notes:

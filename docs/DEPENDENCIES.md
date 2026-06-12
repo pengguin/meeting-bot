@@ -22,6 +22,11 @@ python3 -m venv .venv
 - 说话人分离相关依赖。
 - 文档和报告导出相关依赖。
 
+运行时加速策略：
+
+- 说话人分离使用 `pyannote.audio`；Apple Silicon 默认优先使用 MPS GPU，不兼容操作自动回退 CPU。
+- 语音转写使用 `faster-whisper` / CTranslate2；当前 macOS 路径使用 CPU int8、显式线程数和批量转写。
+
 ## 二、系统工具
 
 后台服务还依赖以下系统级工具：
@@ -58,6 +63,9 @@ codex --version
 
 - `ASR_MODEL`
 - `ASR_LANGUAGE`
+- `ASR_CPU_THREADS`：faster-whisper 使用的 CPU 线程数，默认最多 16。
+- `ASR_BATCH_SIZE`：批量转写大小，默认 8；设为 1 可关闭批量模式。
+- `ASR_BEAM_SIZE`：束搜索大小，默认 5；减小可提速但可能降低准确率。
 - `DIARIZATION_MODEL`
 - `CODEX_BIN`
 - `FFMPEG_BIN`
@@ -69,6 +77,16 @@ codex --version
 ```bash
 CODEX_BIN=/opt/homebrew/bin/codex
 FFMPEG_BIN=/opt/homebrew/bin/ffmpeg
+```
+
+推荐的 Apple Silicon 转写配置：
+
+```bash
+ASR_MODEL=medium
+ASR_LANGUAGE=zh
+ASR_CPU_THREADS=16
+ASR_BATCH_SIZE=8
+ASR_BEAM_SIZE=5
 ```
 
 ## 五、后台服务配置

@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import time
@@ -8,11 +9,18 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
+# Allow unsupported Apple GPU operations to fall back to CPU.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import requests
 import soundfile as sf
 import torch
 
-from faster_whisper import WhisperModel
+# pyannote telemetry can block long-running background processes when its
+# exporter connection becomes stale. The bot runs fully locally, so disable it.
+os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+
 from pyannote.audio import Pipeline
 
 import lark_oapi as lark
@@ -22,6 +30,9 @@ from lark_oapi.api.im.v1 import (
     P2ImMessageReceiveV1,
 )
 
+from chinese_text import simplify_chinese
+from asr_runtime import asr_runtime_description, create_asr_model, transcribe_with_asr_model
+from diarization_runtime import configure_diarization_pipeline, run_diarization_pipeline
 from meetingbot_config import (
     ASR_LANGUAGE,
     ASR_MODEL,
@@ -66,6 +77,7 @@ from transcript_material import (
     create_text_segments_from_transcript,
     normalize_uploaded_transcript_text,
 )
+from transcription_progress import TranscriptionProgress, audio_duration_seconds
 
 
 # ============================================================
@@ -73,6 +85,7 @@ from transcript_material import (
 # ============================================================
 
 PROCESSED_MESSAGE_IDS = set()
+DIARIZATION_LOCK = threading.Lock()
 
 
 def runtime_timestamp() -> str:
@@ -152,6 +165,22 @@ def write_session_runtime_status(
     )
 
 
+def write_idle_runtime_status_if_no_active_task() -> None:
+    try:
+        if RUNTIME_STATUS_FILE.exists():
+            current = json.loads(RUNTIME_STATUS_FILE.read_text(encoding="utf-8"))
+            if current.get("task_status") == "processing":
+                return
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    write_runtime_status(
+        task_status="idle",
+        stage="idle",
+        message="机器人后台服务运行中",
+    )
+
+
 def write_meeting_done_event(
     session_path: Path,
     report: Dict,
@@ -196,11 +225,7 @@ def write_meeting_done_event(
         print(f"[Runtime Event] 写入失败：{e}")
 
 
-write_runtime_status(
-    task_status="idle",
-    stage="idle",
-    message="机器人后台服务运行中",
-)
+write_idle_runtime_status_if_no_active_task()
 
 
 # ============================================================
@@ -221,19 +246,16 @@ feishu_client = (
 # ============================================================
 
 print(f"[ASR] 正在加载 faster-whisper 模型：{ASR_MODEL}")
-whisper_model = WhisperModel(
-    ASR_MODEL,
-    device="cpu",
-    compute_type="int8",
-)
-print("[ASR] faster-whisper 模型加载完成")
+whisper_model = create_asr_model()
+print(f"[ASR] faster-whisper 模型加载完成：{asr_runtime_description()}")
 
 print(f"[Diarization] 正在加载 pyannote 模型：{DIARIZATION_MODEL}")
 diarization_pipeline = Pipeline.from_pretrained(
     DIARIZATION_MODEL,
     token=HF_TOKEN,
 )
-print("[Diarization] pyannote 模型加载完成")
+diarization_device = configure_diarization_pipeline(diarization_pipeline)
+print(f"[Diarization] pyannote 模型加载完成，运行设备：{diarization_device.type}")
 
 
 # ============================================================
@@ -599,7 +621,75 @@ def diarize_audio(audio_path: Path, session_path: Path) -> List[Dict]:
     print(f"[Diarization] 开始说话人分离：{audio_path.name}")
 
     audio_for_pyannote = load_waveform_for_pyannote(audio_path)
-    output = diarization_pipeline(audio_for_pyannote)
+    progress_state = {"step": "", "percent": -1, "updated_at": 0.0}
+    step_labels = {
+        "segmentation": "检测语音活动",
+        "speaker_counting": "估算说话人数",
+        "embeddings": "提取说话人特征",
+        "discrete_diarization": "整理说话人时间段",
+    }
+
+    def progress_hook(
+        step_name: str,
+        _artifact=None,
+        completed: Optional[int] = None,
+        total: Optional[int] = None,
+        **_kwargs,
+    ) -> None:
+        if completed is None or total is None or total <= 0:
+            return
+
+        percent = min(100, max(0, int(completed * 100 / total)))
+        now = time.monotonic()
+        same_step = progress_state["step"] == step_name
+        if (
+            same_step
+            and percent < progress_state["percent"] + 5
+            and now < progress_state["updated_at"] + 15
+        ):
+            return
+
+        progress_state.update(
+            {"step": step_name, "percent": percent, "updated_at": now}
+        )
+        label = step_labels.get(step_name, step_name)
+        message = f"正在进行说话人分离：{label} {percent}%"
+        print(f"[Diarization] {label} {percent}%")
+        write_session_runtime_status(
+            task_status="processing",
+            stage="diarization",
+            message=message,
+            session_path=session_path,
+        )
+
+    if not DIARIZATION_LOCK.acquire(blocking=False):
+        write_session_runtime_status(
+            task_status="processing",
+            stage="diarization",
+            message="已有录音正在进行说话人分离，当前任务正在排队",
+            session_path=session_path,
+        )
+        DIARIZATION_LOCK.acquire()
+
+    try:
+        def on_device_fallback(_error: str) -> None:
+            message = "Apple GPU 不兼容当前音频处理步骤，已自动切换 CPU 继续"
+            print(f"[Diarization] {message}")
+            write_session_runtime_status(
+                task_status="processing",
+                stage="diarization",
+                message=message,
+                session_path=session_path,
+            )
+
+        output = run_diarization_pipeline(
+            diarization_pipeline,
+            audio_for_pyannote,
+            hook=progress_hook,
+            on_fallback=on_device_fallback,
+        )
+    finally:
+        DIARIZATION_LOCK.release()
 
     diarization = getattr(
         output,
@@ -632,16 +722,22 @@ def diarize_audio(audio_path: Path, session_path: Path) -> List[Dict]:
 def transcribe_audio(audio_path: Path, session_path: Path) -> List[Dict]:
     print(f"[ASR] 开始转写：{audio_path.name}")
 
-    segments, _info = whisper_model.transcribe(
-        str(audio_path),
-        language=ASR_LANGUAGE if ASR_LANGUAGE else None,
-        vad_filter=True,
-        beam_size=5,
+    progress = TranscriptionProgress(
+        duration=audio_duration_seconds(audio_path),
+        update=lambda message: write_session_runtime_status(
+            task_status="processing",
+            stage="transcribing",
+            message=message,
+            session_path=session_path,
+        ),
     )
+    progress.start()
+    segments, _info = transcribe_with_asr_model(whisper_model, audio_path)
 
     transcript_segments: List[Dict] = []
     for seg in segments:
-        text = seg.text.strip()
+        text = simplify_chinese(seg.text.strip())
+        progress.advance(float(seg.end))
         if text:
             transcript_segments.append(
                 {
@@ -654,6 +750,7 @@ def transcribe_audio(audio_path: Path, session_path: Path) -> List[Dict]:
     if not transcript_segments:
         raise RuntimeError("转写结果为空")
 
+    progress.complete()
     out_path = session_path / "transcript_segments.json"
     out_path.write_text(
         json.dumps(transcript_segments, ensure_ascii=False, indent=2),
@@ -736,7 +833,7 @@ def build_default_speaker_map(
         speaker_map[speaker] = f"说话人{idx}"
 
     if any(seg["speaker"] == "UNKNOWN" for seg in merged_segments):
-        speaker_map["UNKNOWN"] = "说话人未知"
+        speaker_map["UNKNOWN"] = "未知说话人"
 
     save_speaker_map(session_path, speaker_map)
     return speaker_map
@@ -1525,7 +1622,11 @@ def build_classification_notice(classification: Dict) -> str:
 
 
 def build_detected_speakers_notice(speaker_map: Dict[str, str]) -> str:
-    visible_names = [v for v in speaker_map.values() if v != "说话人未知"]
+    visible_names = [
+        value
+        for raw, value in speaker_map.items()
+        if raw != "UNKNOWN" and value not in {"说话人未知", "未知说话人"}
+    ]
 
     lines = ["当前检测到的说话人："]
     for name in visible_names:
@@ -2202,11 +2303,7 @@ event_handler = (
 
 
 def main() -> None:
-    write_runtime_status(
-        task_status="idle",
-        stage="idle",
-        message="机器人后台服务运行中",
-    )
+    write_idle_runtime_status_if_no_active_task()
     print("[Bot] 启动飞书长连接机器人")
     print("[Bot] 请确认：")
     print("1. 飞书应用已发布")

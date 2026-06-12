@@ -5,6 +5,9 @@
 ## 组成
 
 - `bot.py`：飞书机器人后台入口。
+- `asr_runtime.py`：faster-whisper 模型、线程、批量转写和解码参数的统一入口。
+- `diarization_runtime.py`：说话人分离设备选择及 Apple GPU/CPU 回退逻辑。
+- `transcription_progress.py`：语音转写百分比和已处理时长计算。
 - `MeetingBotMenuBarApp/`：macOS 菜单栏 App，用于安装、状态查看、服务控制和会议库管理。
 - `scripts/`：安装、自检、本地新增会议、重生成和补导出文件脚本。
 - `schemas/`：会议分类和会议报告的结构化输出 schema。
@@ -33,12 +36,22 @@ cp .env.example .env
 
 `.env` 包含真实密钥，已被 `.gitignore` 排除。不要把 `.env` 内容粘贴到 issue、PR、提交信息或公开文档中。
 
+推荐的 Apple Silicon 转写配置：
+
+```bash
+ASR_MODEL=medium
+ASR_LANGUAGE=zh
+ASR_CPU_THREADS=16
+ASR_BATCH_SIZE=8
+ASR_BEAM_SIZE=5
+```
+
 ## 常用验证
 
 ```bash
 python3 -m pytest tests
 bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhouse.sh scripts/doctor.sh scripts/install_optional_tools.sh scripts/preflight.sh scripts/upgrade.sh start_bot.sh
-python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
+python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py asr_runtime.py diarization_runtime.py transcription_progress.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
 ```
 
 ## 发布

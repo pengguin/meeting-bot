@@ -177,6 +177,17 @@
       Codex CLI 安装后仍需由本人完成登录。
     </div>
 
+    <h2>推荐转写性能配置</h2>
+    <pre><code>ASR_MODEL=medium
+ASR_LANGUAGE=zh
+ASR_CPU_THREADS=16
+ASR_BATCH_SIZE=8
+ASR_BEAM_SIZE=5</code></pre>
+    <p>
+      默认配置使用 faster-whisper CPU int8、16 线程和批量转写。增加线程数或批量大小会提高资源占用；
+      减小模型或 beam size 可以进一步提速，但可能降低中文准确率。Apple Silicon 上说话人分离会自动优先使用 Apple GPU。
+    </p>
+
     <h2>升级说明</h2>
     <p>
       已安装用户仍然使用同一份 <code>安装盘.dmg</code> 即可。把新版 App 拖入
@@ -205,6 +216,7 @@ bash scripts/upgrade.sh</code></pre>
       <li>若 <code>codex</code> 或 <code>ffmpeg</code> 不在默认 PATH 中，可在配置中填写绝对路径。</li>
       <li>若首次启动安装失败，App 会显示错误，并把详细日志写入 <code>~/Library/Logs/meeting-bot/首次启动安装.log</code>。</li>
       <li>芯片检查会同时识别原生 arm64 和具备 arm64 能力的 Apple Silicon 机器，避免兼容环境造成误判。</li>
+      <li>构建载荷会排除 <code>.git</code> 和本地运行数据；完整安装会清理旧 App 资源，避免残留文件破坏签名。</li>
     </ul>
   </main>
 </body>

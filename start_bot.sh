@@ -16,6 +16,12 @@ cd "$PROJECT_DIR" || exit 1
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore:pkg_resources is deprecated as an API:UserWarning,ignore:resource_tracker:UserWarning}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+export PYANNOTE_METRICS_ENABLED="${PYANNOTE_METRICS_ENABLED:-false}"
+export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-$PROJECT_DIR/runtime/matplotlib}"
+
+mkdir -p "$MPLCONFIGDIR"
 
 exec "$PYTHON_BIN" "$PROJECT_DIR/bot.py" 2> >(
   grep -v "Class AVFFrameReceiver is implemented in both" |

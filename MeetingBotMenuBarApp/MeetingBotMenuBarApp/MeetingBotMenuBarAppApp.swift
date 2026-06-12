@@ -39,6 +39,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var transcriptWindows: [String: NSWindow] = [:]
     private var cancellables = Set<AnyCancellable>()
     private var acknowledgedStatusSignature: String?
+    private var statusIconAnimationTimer: Timer?
+    private var processingAnimationFrame = 0
+
+    private static let processingAnimationProgress: [Double] = [
+        0, 0.25, 0.5, 0.75, 1,
+        1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1,
+    ]
+    private static let processingPulseOffsets: [CGFloat] = [
+        0, 1.5, 0, -1, 0,
+        0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0,
+    ]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -239,6 +252,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func updateStatusIcon() {
+        synchronizeStatusIconAnimation()
+        renderStatusIcon()
+    }
+
+    private func renderStatusIcon() {
         statusItem?.button?.image = makeStatusBarImage()
         statusItem?.button?.contentTintColor = nil
     }
@@ -247,6 +265,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let iconStyleRaw = UserDefaults.standard.string(forKey: AppPreferenceKeys.statusBarIconStyle)
             ?? StatusBarIconStyle.waveform.rawValue
         let iconStyle = StatusBarIconStyle(rawValue: iconStyleRaw) ?? .waveform
+        let tintColor = statusBarIconColorMode().tintColor
+
+        if shouldAnimateProcessingStatusIcon {
+            return makeAnimatedProcessingStatusImage(
+                iconStyle: iconStyle,
+                tintColor: tintColor
+            )
+        }
+
         guard let image = NSImage(
             systemSymbolName: iconStyle.symbol(
                 launchStatus: store.launchStatus,
@@ -257,7 +284,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return nil
         }
 
-        let tintColor = statusBarIconColorMode().tintColor
         if let configuredImage = image.withSymbolConfiguration(
             NSImage.SymbolConfiguration(paletteColors: [tintColor])
         ) {
@@ -266,6 +292,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         return image.tinted(with: tintColor)
+    }
+
+    private func synchronizeStatusIconAnimation() {
+        guard shouldAnimateProcessingStatusIcon else {
+            statusIconAnimationTimer?.invalidate()
+            statusIconAnimationTimer = nil
+            processingAnimationFrame = 0
+            return
+        }
+
+        guard statusIconAnimationTimer == nil else {
+            return
+        }
+
+        processingAnimationFrame = 0
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.processingAnimationFrame =
+                (self.processingAnimationFrame + 1) % Self.processingAnimationProgress.count
+            self.renderStatusIcon()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        statusIconAnimationTimer = timer
+    }
+
+    private var shouldAnimateProcessingStatusIcon: Bool {
+        guard store.launchStatus != .missing,
+              store.launchStatus != .stopped,
+              let runtimeStatus = store.runtimeStatus else {
+            return false
+        }
+
+        return runtimeStatus.taskStatus == "processing"
+    }
+
+    private func makeAnimatedProcessingStatusImage(
+        iconStyle: StatusBarIconStyle,
+        tintColor: NSColor
+    ) -> NSImage? {
+        let progress = Self.processingAnimationProgress[processingAnimationFrame]
+        guard let image = NSImage(
+            systemSymbolName: iconStyle.animatedProcessingSymbol,
+            variableValue: progress,
+            accessibilityDescription: "正在处理会议"
+        ) else {
+            return nil
+        }
+
+        let configuredImage = image.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(paletteColors: [tintColor])
+        ) ?? image
+        let tintedImage = configuredImage.tinted(with: tintColor)
+
+        guard iconStyle == .pulse else {
+            return tintedImage
+        }
+
+        return tintedImage.offsetVertically(
+            by: Self.processingPulseOffsets[processingAnimationFrame]
+        )
     }
 
     private func statusBarIconColorMode() -> StatusBarIconColorMode {
@@ -611,6 +699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        statusIconAnimationTimer?.invalidate()
         store.stopServiceOnTerminationIfNeeded()
     }
 
@@ -662,6 +751,24 @@ private extension NSImage {
         color.set()
         rect.fill()
         draw(in: rect, from: .zero, operation: .destinationIn, fraction: 1)
+        output.unlockFocus()
+        output.isTemplate = false
+        return output
+    }
+
+    func offsetVertically(by offset: CGFloat) -> NSImage {
+        guard offset != 0 else {
+            return self
+        }
+
+        let output = NSImage(size: size)
+        output.lockFocus()
+        draw(
+            in: NSRect(x: 0, y: offset, width: size.width, height: size.height),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1
+        )
         output.unlockFocus()
         output.isTemplate = false
         return output

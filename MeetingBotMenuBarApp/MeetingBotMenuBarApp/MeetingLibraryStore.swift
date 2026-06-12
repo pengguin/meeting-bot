@@ -262,10 +262,12 @@ final class MeetingLibraryStore: ObservableObject {
     @Published private(set) var regeneratingSessionIDs: Set<String> = []
     @Published private(set) var generatingExportKeys: Set<String> = []
     @Published private(set) var isCreatingLocalMeeting = false
+    @Published private(set) var isCancellingLocalMeeting = false
     @Published private(set) var localMeetingCreationMessage = ""
 
     private let fileManager = FileManager.default
     private var lastSessionsDirectoryModificationDate: Date?
+    private var localMeetingProcess: Process?
 
     init() {
         reload()
@@ -368,7 +370,26 @@ final class MeetingLibraryStore: ObservableObject {
     }
 
     func speakerLabel(for meeting: MeetingRecord, speakerID: String) -> String {
-        metadata.sessions[meeting.sessionID]?.speakerLabels[speakerID] ?? ""
+        if let stored = metadata.sessions[meeting.sessionID]?.speakerLabels[speakerID] {
+            return stored
+        }
+
+        let mapped = loadSpeakerMap(for: meeting)[speakerID] ?? ""
+        return Self.isAnonymousSpeakerName(mapped, for: speakerID) ? "" : mapped
+    }
+
+    func anonymousSpeakerLabel(for speakerID: String) -> String {
+        Self.anonymousSpeakerLabel(for: speakerID)
+    }
+
+    func displaySpeakerLabel(for meeting: MeetingRecord, speakerID: String) -> String {
+        let override = speakerLabel(for: meeting, speakerID: speakerID)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !override.isEmpty {
+            return override
+        }
+
+        return Self.anonymousSpeakerLabel(for: speakerID)
     }
 
     func note(for meeting: MeetingRecord) -> String {
@@ -397,16 +418,23 @@ final class MeetingLibraryStore: ObservableObject {
     }
 
     func detailDraft(for meeting: MeetingRecord) -> MeetingDetailDraft {
-        MeetingDetailDraft(
+        let speakerLabels = meeting.detectedSpeakers.reduce(into: [String: String]()) { result, speakerID in
+            let label = speakerLabel(for: meeting, speakerID: speakerID)
+            if !label.isEmpty {
+                result[speakerID] = label
+            }
+        }
+        return MeetingDetailDraft(
             labelsText: labels(for: meeting).joined(separator: ", "),
             note: note(for: meeting),
             actualMeetingDate: actualMeetingDate(for: meeting),
-            speakerLabels: metadata.sessions[meeting.sessionID]?.speakerLabels ?? [:]
+            speakerLabels: speakerLabels
         )
     }
 
     func saveDetailDraft(_ draft: MeetingDetailDraft, for meeting: MeetingRecord) {
-        var sessionMetadata = metadata.sessions[meeting.sessionID] ?? SessionUserMetadata()
+        let previousMetadata = metadata.sessions[meeting.sessionID] ?? SessionUserMetadata()
+        var sessionMetadata = previousMetadata
         sessionMetadata.labels = Self.parseLabels(draft.labelsText)
         sessionMetadata.note = draft.note
         sessionMetadata.actualMeetingAt = draft.actualMeetingDate.map(DateDisplay.storageString) ?? ""
@@ -418,6 +446,25 @@ final class MeetingLibraryStore: ObservableObject {
         }
         metadata.sessions[meeting.sessionID] = sessionMetadata
         saveMetadata()
+
+        guard previousMetadata.speakerLabels != sessionMetadata.speakerLabels else {
+            return
+        }
+
+        do {
+            try writeSessionSpeakerMap(
+                for: meeting,
+                speakerOverrides: sessionMetadata.speakerLabels
+            )
+            let version = sessionMetadata.speakerLabels.isEmpty ? "anonymous" : "named"
+            regenerateReport(
+                for: meeting,
+                templateID: meeting.meetingType,
+                version: version
+            )
+        } catch {
+            lastErrorMessage = "说话人标注保存失败：\(error.localizedDescription)"
+        }
     }
 
     func updateLabels(for meeting: MeetingRecord, rawValue: String) {
@@ -892,7 +939,11 @@ final class MeetingLibraryStore: ObservableObject {
         }
     }
 
-    func regenerateReport(for meeting: MeetingRecord, templateID: String) {
+    func regenerateReport(
+        for meeting: MeetingRecord,
+        templateID: String,
+        version: String = "auto"
+    ) {
         guard !regeneratingSessionIDs.contains(meeting.sessionID) else {
             return
         }
@@ -912,6 +963,8 @@ final class MeetingLibraryStore: ObservableObject {
             meeting.sessionURL.path,
             "--template",
             templateID,
+            "--version",
+            version,
         ]
         if let speakerMapURL {
             arguments.append(contentsOf: ["--speaker-map-file", speakerMapURL.path])
@@ -1038,20 +1091,19 @@ final class MeetingLibraryStore: ObservableObject {
     }
 
     func hasNamedSpeakers(for meeting: MeetingRecord) -> Bool {
-        guard let labels = metadata.sessions[meeting.sessionID]?.speakerLabels else {
-            return false
-        }
-        return labels.values.contains {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        meeting.detectedSpeakers.contains { speakerID in
+            !speakerLabel(for: meeting, speakerID: speakerID)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
         }
     }
 
     private func writeSpeakerOverridesFile(for meeting: MeetingRecord) -> URL? {
-        let labels = metadata.sessions[meeting.sessionID]?.speakerLabels ?? [:]
-        let overrides = labels.reduce(into: [String: String]()) { result, entry in
-            let name = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let overrides = meeting.detectedSpeakers.reduce(into: [String: String]()) { result, speakerID in
+            let name = speakerLabel(for: meeting, speakerID: speakerID)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             if !name.isEmpty {
-                result[entry.key] = name
+                result[speakerID] = name
             }
         }
         guard !overrides.isEmpty else {
@@ -1067,6 +1119,32 @@ final class MeetingLibraryStore: ObservableObject {
         } catch {
             return nil
         }
+    }
+
+    private func writeSessionSpeakerMap(
+        for meeting: MeetingRecord,
+        speakerOverrides: [String: String]
+    ) throws {
+        let existingMap = loadSpeakerMap(for: meeting)
+        let segmentSpeakerIDs = transcriptSegments(for: meeting).map(\.speaker)
+        let speakerIDs = Set(existingMap.keys + meeting.detectedSpeakers + segmentSpeakerIDs)
+
+        let updatedMap = speakerIDs.reduce(into: [String: String]()) { result, speakerID in
+            let override = speakerOverrides[speakerID]?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            result[speakerID] = override.isEmpty
+                ? Self.anonymousSpeakerLabel(for: speakerID)
+                : override
+        }
+
+        let data = try JSONSerialization.data(
+            withJSONObject: updatedMap,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try data.write(
+            to: meeting.sessionURL.appendingPathComponent("speaker_map.json"),
+            options: .atomic
+        )
     }
 
     func createLocalMeeting(
@@ -1107,6 +1185,7 @@ final class MeetingLibraryStore: ObservableObject {
         }
 
         isCreatingLocalMeeting = true
+        isCancellingLocalMeeting = false
         localMeetingCreationMessage = "正在准备新增会议"
         localMeetingCreationError = nil
 
@@ -1166,10 +1245,17 @@ final class MeetingLibraryStore: ObservableObject {
                     stderrText += chunk
                 }
                 self.isCreatingLocalMeeting = false
+                self.localMeetingProcess = nil
 
                 let trimmedStdout = stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedStderr = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if process.terminationStatus == 0,
+                if self.isCancellingLocalMeeting {
+                    self.isCancellingLocalMeeting = false
+                    self.localMeetingCreationMessage = ""
+                    self.localMeetingCreationError = nil
+                    self.writeIdleRuntimeStatus()
+                    completion(nil)
+                } else if process.terminationStatus == 0,
                    let result = self.decodeLocalMeetingCreationResult(from: trimmedStdout) {
                     self.localMeetingCreationMessage = "会议已创建"
                     self.reload(forceScan: true)
@@ -1190,13 +1276,33 @@ final class MeetingLibraryStore: ObservableObject {
 
         do {
             try process.run()
+            localMeetingProcess = process
         } catch {
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             isCreatingLocalMeeting = false
+            isCancellingLocalMeeting = false
+            localMeetingProcess = nil
             localMeetingCreationMessage = ""
             localMeetingCreationError = "无法启动新增会议任务：\(error.localizedDescription)"
             completion(nil)
+        }
+    }
+
+    func cancelLocalMeetingCreation() {
+        guard isCreatingLocalMeeting,
+              let process = localMeetingProcess,
+              process.isRunning else {
+            return
+        }
+
+        isCancellingLocalMeeting = true
+        localMeetingCreationMessage = "正在中止处理"
+        process.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
+            if process.isRunning {
+                process.interrupt()
+            }
         }
     }
 
@@ -1210,6 +1316,33 @@ final class MeetingLibraryStore: ObservableObject {
         }
         if let message = progress["message"] as? String, !message.isEmpty {
             localMeetingCreationMessage = message
+        }
+    }
+
+    private func writeIdleRuntimeStatus() {
+        let statusURL = AppPaths.projectRoot.appendingPathComponent("runtime/status.json")
+        let payload: [String: String] = [
+            "service_status": "running",
+            "task_status": "idle",
+            "stage": "idle",
+            "message": "机器人后台服务运行中",
+            "session_id": "",
+            "session_dir": "",
+            "latest_pdf": "",
+            "latest_docx": "",
+            "latest_html": "",
+            "latest_md": "",
+            "updated_at": DateDisplay.storageString(from: Date()),
+        ]
+
+        do {
+            let data = try JSONSerialization.data(
+                withJSONObject: payload,
+                options: [.prettyPrinted, .sortedKeys]
+            )
+            try data.write(to: statusURL, options: .atomic)
+        } catch {
+            lastErrorMessage = "处理已中止，但状态栏重置失败：\(error.localizedDescription)"
         }
     }
 
@@ -1600,6 +1733,37 @@ final class MeetingLibraryStore: ObservableObject {
             return [:]
         }
         return raw
+    }
+
+    private static func anonymousSpeakerLabel(for speakerID: String) -> String {
+        let normalized = speakerID.uppercased()
+        if normalized == "UNKNOWN" {
+            return "未知说话人"
+        }
+        if normalized == "TEXT" {
+            return "转录文本"
+        }
+
+        let pattern = #"^SPEAKER[_\s-]?(\d+)$"#
+        if let expression = try? NSRegularExpression(pattern: pattern),
+           let match = expression.firstMatch(
+               in: speakerID,
+               range: NSRange(speakerID.startIndex..., in: speakerID)
+           ),
+           let numberRange = Range(match.range(at: 1), in: speakerID),
+           let number = Int(speakerID[numberRange]) {
+            return "说话人\(number + 1)"
+        }
+
+        return speakerID
+    }
+
+    private static func isAnonymousSpeakerName(_ name: String, for speakerID: String) -> Bool {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty
+            || normalized == speakerID
+            || normalized == anonymousSpeakerLabel(for: speakerID)
+            || (speakerID.uppercased() == "UNKNOWN" && normalized == "说话人未知")
     }
 
     private func renderTranscriptMarkdown(

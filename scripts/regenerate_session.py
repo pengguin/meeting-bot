@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -15,6 +16,25 @@ from report_export import (
     generate_formal_minutes_markdown,
 )
 from report_generation import generate_structured_report
+
+
+def anonymous_speaker_label(raw: str, fallback: str = "") -> str:
+    if raw == "UNKNOWN":
+        return "未知说话人"
+    if raw == "TEXT":
+        return "转录文本"
+    match = re.fullmatch(r"SPEAKER[_\s-]?(\d+)", raw, re.IGNORECASE)
+    if match:
+        return f"说话人{int(match.group(1)) + 1}"
+    return fallback or raw
+
+
+def save_speaker_map(session_path: Path, speaker_map: dict[str, str]) -> None:
+    path = session_path / "speaker_map.json"
+    path.write_text(
+        json.dumps(speaker_map, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def render_transcript_markdown(
@@ -68,8 +88,23 @@ def load_transcript(
         if speaker_map_path.exists()
         else {}
     )
+    if named:
+        speaker_map = {
+            raw: (
+                "未知说话人"
+                if raw == "UNKNOWN"
+                else str(name).strip() or anonymous_speaker_label(raw)
+            )
+            for raw, name in speaker_map.items()
+        }
+    else:
+        speaker_map = {
+            raw: anonymous_speaker_label(raw, fallback=str(name))
+            for raw, name in speaker_map.items()
+        }
     if speaker_overrides:
         speaker_map = {**speaker_map, **speaker_overrides}
+    save_speaker_map(session_path, speaker_map)
     segments_path = session_path / "transcript_with_speaker_raw.json"
     if segments_path.exists():
         segments = json.loads(segments_path.read_text(encoding="utf-8"))
@@ -92,8 +127,14 @@ def regenerate(
     session_path: Path,
     template_id: str,
     speaker_overrides: dict[str, str] | None = None,
+    version: str = "auto",
 ) -> dict:
-    named = bool(speaker_overrides) or (session_path / "report_named.json").exists()
+    if version == "named":
+        named = True
+    elif version == "anonymous":
+        named = False
+    else:
+        named = bool(speaker_overrides) or (session_path / "report_named.json").exists()
     transcript, speaker_map = load_transcript(
         session_path,
         named=named,
@@ -164,6 +205,17 @@ def regenerate(
         docx_path.unlink(missing_ok=True)
         docx_path = None
 
+    if not named:
+        for stale_path in [
+            session_path / "report_named.json",
+            session_path / "transcript_named.md",
+            session_path / "summary_named.txt",
+        ]:
+            stale_path.unlink(missing_ok=True)
+        for stale_path in session_path.glob("*实名版*"):
+            if stale_path.is_file():
+                stale_path.unlink(missing_ok=True)
+
     return {
         "template": template_id,
         "report_title": report.get("report_title", "会议纪要"),
@@ -204,9 +256,20 @@ def main() -> None:
         default="",
         help="JSON 文件路径，内容为 {说话人ID: 真实姓名}，用于生成实名版纪要。",
     )
+    parser.add_argument(
+        "--version",
+        choices=["auto", "anonymous", "named"],
+        default="auto",
+        help="指定重生成匿名版或实名版；默认根据现有文件和说话人标注判断。",
+    )
     args = parser.parse_args()
     speaker_overrides = load_speaker_overrides(args.speaker_map_file)
-    result = regenerate(Path(args.session), args.template, speaker_overrides)
+    result = regenerate(
+        Path(args.session),
+        args.template,
+        speaker_overrides,
+        version=args.version,
+    )
     print(json.dumps(result, ensure_ascii=False))
 
 

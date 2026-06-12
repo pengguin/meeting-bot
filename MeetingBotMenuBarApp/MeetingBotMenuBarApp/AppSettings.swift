@@ -64,6 +64,10 @@ enum StatusBarIconStyle: String, CaseIterable, Identifiable {
         symbol(launchStatus: .running, taskStatus: nil)
     }
 
+    var animatedProcessingSymbol: String {
+        idleSymbol
+    }
+
     func symbol(launchStatus: LaunchAgentStatus, taskStatus: String?) -> String {
         if launchStatus == .missing || launchStatus == .stopped {
             return alertSymbol
@@ -91,12 +95,7 @@ enum StatusBarIconStyle: String, CaseIterable, Identifiable {
     }
 
     private var processingSymbol: String {
-        switch self {
-        case .waveform:
-            return "waveform.circle"
-        case .pulse:
-            return "waveform.path.ecg.rectangle"
-        }
+        idleSymbol
     }
 
     private var doneSymbol: String {

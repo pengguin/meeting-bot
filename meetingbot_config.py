@@ -15,6 +15,18 @@ HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 ASR_ENGINE = os.getenv("ASR_ENGINE", "faster-whisper").strip() or "faster-whisper"
 ASR_MODEL = os.getenv("ASR_MODEL", "small").strip()
 ASR_LANGUAGE = os.getenv("ASR_LANGUAGE", "zh").strip()
+
+
+def positive_env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+ASR_CPU_THREADS = positive_env_int("ASR_CPU_THREADS", min(16, os.cpu_count() or 8))
+ASR_BATCH_SIZE = positive_env_int("ASR_BATCH_SIZE", 8)
+ASR_BEAM_SIZE = positive_env_int("ASR_BEAM_SIZE", 5)
 DIARIZATION_MODEL = os.getenv(
     "DIARIZATION_MODEL",
     "pyannote/speaker-diarization-community-1",

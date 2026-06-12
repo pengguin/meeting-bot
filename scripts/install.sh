@@ -311,7 +311,7 @@ setup_python() {
   fi
   info "已选择 Python 解释器：$python"
 
-  if [[ -x ".venv/bin/python" ]]; then
+  if [[ -d ".venv" ]]; then
     info "重建不可用的 Python 虚拟环境"
     "$python" -m venv --clear .venv
   else
@@ -486,6 +486,7 @@ import importlib
 modules = [
     "faster_whisper",
     "lark_oapi",
+    "opencc",
     "pyannote.audio",
     "docx",
     "dotenv",

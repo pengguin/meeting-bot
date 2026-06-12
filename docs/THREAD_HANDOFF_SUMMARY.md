@@ -504,3 +504,18 @@ bash scripts/build_setup_package.sh
 ```
 
 6. 不要把 `.env`、`sessions/`、`downloads/`、`logs/`、`runtime/`、`backups/` 放进发行包或外发内容。
+
+## 2026-06-12 说话人、转写性能与会议库交互更新
+
+- 会议库保存说话人姓名后，会写回 session 的 `speaker_map.json`，自动生成实名转录稿和会议纪要；清空姓名后恢复匿名版并移除陈旧实名文件。
+- 显示层统一为 `SPEAKER_00 -> 说话人1`、`UNKNOWN -> 未知说话人`，旧值“说话人未知”按匿名值兼容处理。
+- `diarization_runtime.py` 统一负责 pyannote 设备选择；Apple Silicon 优先使用 MPS，运行时不兼容则回退 CPU。真实 2 分钟片段测试约 10 秒完成。
+- `transcription_progress.py` 按 faster-whisper 产出的时间戳写入实时百分比和已处理时长。
+- `asr_runtime.py` 统一负责 faster-whisper；默认 `medium / CPU int8 / 16 threads / batch 8 / beam 5`。同一 2 分钟片段由 64.82 秒降至 29.81 秒，约 2.17 倍加速。
+- 新增会议支持拖拽录音和转录稿；共享状态在窗口关闭后继续显示于主窗口底部，并可中止实际子进程。
+- `scripts/create_local_meeting.py` 增加跨进程文件锁，阻止重复本地会议任务并行运行。
+- 会议详情右侧标题、“撤销”和“保存”从滚动内容中拆出，改为固定顶部操作栏。
+- 菜单栏在所有 `processing` 阶段基于当前所选 SF Symbol 播放动画，避免生成纪要阶段回退到带圈图标：`waveform` 使用可变层在 0.5 秒内由左向右单向推进，`waveform.path.ecg` 在推进时加入轻微上下跳动；随后暂停 1 秒再重复。
+- 原始转录播放器拖动进度条时不再连续调用 `AVPlayer.seek`；拖动期间仅更新预览时间，松手后使用容差执行一次跳转，避免长录音频繁精确 seek 导致界面卡顿。
+- App 构建载荷排除 `.git`；安装模式使用完整同步清理旧资源，避免 App 运行后产生 `.git` 记录并破坏签名。
+- 验证：20 项 Python 单元测试通过；App 构建和 `codesign --verify --deep --strict` 通过。

@@ -138,6 +138,24 @@ struct MainWindowView: View {
             }
 
             Spacer(minLength: 0)
+
+            if libraryStore.isCreatingLocalMeeting {
+                ProgressView()
+                    .controlSize(.small)
+                Text(
+                    libraryStore.localMeetingCreationMessage.isEmpty
+                        ? "正在处理新增会议"
+                        : libraryStore.localMeetingCreationMessage
+                )
+                .lineLimit(1)
+
+                Button(libraryStore.isCancellingLocalMeeting ? "正在中止" : "中止") {
+                    libraryStore.cancelLocalMeetingCreation()
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+                .disabled(libraryStore.isCancellingLocalMeeting)
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -921,16 +939,22 @@ private struct MeetingLibraryView: View {
     @ViewBuilder
     private var detail: some View {
         if let meeting = store.selectedMeeting {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header(for: meeting)
-                    summary(for: meeting)
-                    labelsEditor(for: meeting)
-                    notesEditor(for: meeting)
-                    speakerEditor(for: meeting)
-                    relatedMeetings(for: meeting)
+            VStack(spacing: 0) {
+                detailTitleBar(for: meeting)
+
+                Divider()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        header(for: meeting)
+                        summary(for: meeting)
+                        labelsEditor(for: meeting)
+                        notesEditor(for: meeting)
+                        speakerEditor(for: meeting)
+                        relatedMeetings(for: meeting)
+                    }
+                    .padding(20)
                 }
-                .padding(20)
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .task(id: meeting.sessionID) {
@@ -945,32 +969,40 @@ private struct MeetingLibraryView: View {
         }
     }
 
+    private func detailTitleBar(for meeting: MeetingRecord) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(meeting.title)
+                .font(.title2.weight(.semibold))
+                .textSelection(.enabled)
+                .lineLimit(2)
+
+            Spacer(minLength: 12)
+
+            Button("撤销") {
+                detailDrafts[meeting.sessionID] = store.detailDraft(for: meeting)
+            }
+            .disabled(!hasUnsavedChanges(for: meeting))
+
+            Button("保存") {
+                store.saveDetailDraft(currentDraft(for: meeting), for: meeting)
+                detailDrafts[meeting.sessionID] = store.detailDraft(for: meeting)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(
+                !hasUnsavedChanges(for: meeting)
+                    || store.regeneratingSessionIDs.contains(meeting.sessionID)
+            )
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
     private func header(for meeting: MeetingRecord) -> some View {
         let draft = currentDraft(for: meeting)
 
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                Text(meeting.title)
-                    .font(.title2.weight(.semibold))
-                    .textSelection(.enabled)
-
-                Spacer(minLength: 12)
-
-                HStack(spacing: 8) {
-                    Button("撤销") {
-                        detailDrafts[meeting.sessionID] = store.detailDraft(for: meeting)
-                    }
-                    .disabled(!hasUnsavedChanges(for: meeting))
-
-                    Button("保存") {
-                        store.saveDetailDraft(currentDraft(for: meeting), for: meeting)
-                        detailDrafts[meeting.sessionID] = store.detailDraft(for: meeting)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!hasUnsavedChanges(for: meeting))
-                }
-            }
-
             HStack(spacing: 12) {
                 Label("生成：\(meeting.createdAtDisplay)", systemImage: "calendar")
                 Menu {
@@ -1253,7 +1285,7 @@ private struct MeetingLibraryView: View {
                 } else {
                     ForEach(meeting.detectedSpeakers, id: \.self) { speakerID in
                         HStack(spacing: 10) {
-                            Text(speakerID)
+                            Text(store.anonymousSpeakerLabel(for: speakerID))
                                 .frame(width: 110, alignment: .leading)
                                 .foregroundStyle(.secondary)
 
@@ -1271,7 +1303,7 @@ private struct MeetingLibraryView: View {
                     }
                 }
 
-                Text("跨 session 的说话人对齐基于人工标注；同一姓名会自动归到一起。")
+                Text("保存后会同步更新转录稿与会议纪要；内部声纹标签不会直接展示。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1899,28 +1931,34 @@ struct NewMeetingWindowView: View {
                     materialRow(
                         title: "录音",
                         url: audioURL,
-                        placeholder: "可选，支持 m4a / mp3 / wav 等"
+                        placeholder: "可选，支持 m4a / mp3 / wav 等",
+                        allowedExtensions: ["m4a", "mp3", "wav", "aac", "flac", "ogg", "opus", "mp4", "mov", "webm"]
                     ) {
                         audioURL = chooseFile(
                             allowedExtensions: ["m4a", "mp3", "wav", "aac", "flac", "ogg", "opus", "mp4", "mov", "webm"]
                         )
                     } clearAction: {
                         audioURL = nil
+                    } dropAction: { url in
+                        audioURL = url
                     }
 
                     materialRow(
                         title: "转录稿",
                         url: transcriptURL,
-                        placeholder: "可选，提供后将直接生成纪要"
+                        placeholder: "可选，提供后将直接生成纪要",
+                        allowedExtensions: ["txt", "md", "markdown", "csv", "srt", "vtt"]
                     ) {
                         transcriptURL = chooseFile(
                             allowedExtensions: ["txt", "md", "markdown", "csv", "srt", "vtt"]
                         )
                     } clearAction: {
                         transcriptURL = nil
+                    } dropAction: { url in
+                        transcriptURL = url
                     }
 
-                    Text("同时提供录音和转录稿时，将保留录音，并优先使用现成转录稿生成纪要。")
+                    Text("可将文件直接拖到对应材料栏。同时提供录音和转录稿时，将保留录音，并优先使用现成转录稿生成纪要。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1965,6 +2003,11 @@ struct NewMeetingWindowView: View {
                         .controlSize(.small)
                     Text(store.localMeetingCreationMessage.isEmpty ? "正在处理" : store.localMeetingCreationMessage)
                         .foregroundStyle(.secondary)
+                    Button(store.isCancellingLocalMeeting ? "正在中止" : "中止") {
+                        store.cancelLocalMeetingCreation()
+                    }
+                    .foregroundStyle(.red)
+                    .disabled(store.isCancellingLocalMeeting)
                 } else if let localMeetingCreationError = store.localMeetingCreationError,
                           !localMeetingCreationError.isEmpty {
                     Text(localMeetingCreationError)
@@ -2062,8 +2105,10 @@ struct NewMeetingWindowView: View {
         title: String,
         url: URL?,
         placeholder: String,
+        allowedExtensions: [String],
         chooseAction: @escaping () -> Void,
-        clearAction: @escaping () -> Void
+        clearAction: @escaping () -> Void,
+        dropAction: @escaping (URL) -> Void
     ) -> some View {
         HStack(spacing: 10) {
             Text(title)
@@ -2072,6 +2117,9 @@ struct NewMeetingWindowView: View {
                 .foregroundStyle(url == nil ? .secondary : .primary)
                 .lineLimit(1)
             Spacer(minLength: 8)
+            Text("拖拽到此处")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button("选择", action: chooseAction)
             if url != nil {
                 Button {
@@ -2082,6 +2130,50 @@ struct NewMeetingWindowView: View {
                 .buttonStyle(.plain)
             }
         }
+        .padding(8)
+        .contentShape(Rectangle())
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(Color(nsColor: .separatorColor))
+        )
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
+            acceptDroppedFile(
+                providers,
+                allowedExtensions: allowedExtensions,
+                dropAction: dropAction
+            )
+        }
+    }
+
+    private func acceptDroppedFile(
+        _ providers: [NSItemProvider],
+        allowedExtensions: [String],
+        dropAction: @escaping (URL) -> Void
+    ) -> Bool {
+        guard let provider = providers.first(where: {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }) else {
+            return false
+        }
+
+        provider.loadDataRepresentation(
+            forTypeIdentifier: UTType.fileURL.identifier
+        ) { data, _ in
+            guard let data,
+                  let url = NSURL(
+                    absoluteURLWithDataRepresentation: data,
+                    relativeTo: nil
+                  ) as URL?,
+                  allowedExtensions.contains(url.pathExtension.lowercased()) else {
+                return
+            }
+            DispatchQueue.main.async {
+                dropAction(url)
+            }
+        }
+        return true
     }
 
     private func chooseFile(allowedExtensions: [String]) -> URL? {
@@ -2139,9 +2231,19 @@ struct TranscriptEditorWindowView: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     Spacer()
-                                    TextField("说话人", text: $segment.speaker)
-                                        .frame(width: 150)
-                                        .textFieldStyle(.roundedBorder)
+                                    Picker("说话人", selection: $segment.speaker) {
+                                        ForEach(speakerChoices(for: segment), id: \.self) { speakerID in
+                                            Text(
+                                                store.displaySpeakerLabel(
+                                                    for: meeting,
+                                                    speakerID: speakerID
+                                                )
+                                            )
+                                            .tag(speakerID)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .frame(width: 170)
                                 }
 
                                 TextEditor(text: $segment.text)
@@ -2202,6 +2304,14 @@ struct TranscriptEditorWindowView: View {
         }
     }
 
+    private func speakerChoices(for segment: TranscriptSegment) -> [String] {
+        var choices = meeting.detectedSpeakers
+        if !choices.contains(segment.speaker) {
+            choices.append(segment.speaker)
+        }
+        return choices
+    }
+
     private func timestamp(_ seconds: Double) -> String {
         let total = max(0, Int(seconds.rounded()))
         return String(
@@ -2216,6 +2326,7 @@ struct TranscriptEditorWindowView: View {
 private struct TranscriptAudioPlayer: View {
     let audioURL: URL?
     @ObservedObject var model: TranscriptAudioPlayerModel
+    @State private var scrubProgress: Double?
 
     var body: some View {
         GroupBox("录音") {
@@ -2236,13 +2347,26 @@ private struct TranscriptAudioPlayer: View {
 
                         Slider(
                             value: Binding(
-                                get: { model.progress },
-                                set: { model.seek(to: $0) }
+                                get: { scrubProgress ?? model.progress },
+                                set: { scrubProgress = $0 }
                             ),
-                            in: 0...1
+                            in: 0...1,
+                            onEditingChanged: { isEditing in
+                                if isEditing {
+                                    model.beginScrubbing()
+                                } else {
+                                    model.finishScrubbing(
+                                        at: scrubProgress ?? model.progress
+                                    )
+                                    scrubProgress = nil
+                                }
+                            }
                         )
 
-                        Text(model.timeDisplay)
+                        Text(
+                            scrubProgress.map { model.timeDisplay(at: $0) }
+                                ?? model.timeDisplay
+                        )
                             .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
@@ -2270,6 +2394,8 @@ final class TranscriptAudioPlayerModel: ObservableObject {
 
     private var player: AVPlayer?
     private var observer: Any?
+    private var isScrubbing = false
+    private var duration = 0.0
 
     func load(url: URL) {
         stop()
@@ -2284,6 +2410,10 @@ final class TranscriptAudioPlayerModel: ObservableObject {
             }
             let current = time.seconds.isFinite ? time.seconds : 0
             let duration = player.currentItem?.duration.seconds ?? 0
+            guard !self.isScrubbing else {
+                return
+            }
+            self.duration = duration.isFinite ? duration : 0
             self.currentTime = current
             self.progress = duration > 0 ? min(max(current / duration, 0), 1) : 0
             self.timeDisplay = "\(self.format(current)) / \(self.format(duration))"
@@ -2302,16 +2432,33 @@ final class TranscriptAudioPlayerModel: ObservableObject {
         isPlaying.toggle()
     }
 
-    func seek(to progress: Double) {
-        guard let player,
-              let duration = player.currentItem?.duration.seconds,
-              duration.isFinite,
-              duration > 0 else {
+    func beginScrubbing() {
+        isScrubbing = true
+    }
+
+    func finishScrubbing(at progress: Double) {
+        defer {
+            isScrubbing = false
+        }
+        guard let player, duration > 0 else {
             return
         }
-        let seconds = duration * min(max(progress, 0), 1)
+
+        let clampedProgress = min(max(progress, 0), 1)
+        let seconds = duration * clampedProgress
+        self.progress = clampedProgress
         currentTime = seconds
-        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+        timeDisplay = "\(format(seconds)) / \(format(duration))"
+        player.seek(
+            to: CMTime(seconds: seconds, preferredTimescale: 600),
+            toleranceBefore: CMTime(seconds: 0.1, preferredTimescale: 600),
+            toleranceAfter: CMTime(seconds: 0.1, preferredTimescale: 600)
+        )
+    }
+
+    func timeDisplay(at progress: Double) -> String {
+        let seconds = duration * min(max(progress, 0), 1)
+        return "\(format(seconds)) / \(format(duration))"
     }
 
     func stop() {
@@ -2322,6 +2469,8 @@ final class TranscriptAudioPlayerModel: ObservableObject {
         player = nil
         observer = nil
         isPlaying = false
+        isScrubbing = false
+        duration = 0
         progress = 0
         currentTime = 0
         timeDisplay = "00:00 / 00:00"

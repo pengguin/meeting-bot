@@ -335,7 +335,7 @@ extension RuntimeStatus {
     var taskSymbolName: String {
         switch taskStatus {
         case "processing":
-            return "waveform.circle"
+            return "waveform"
         case "done":
             return "checkmark.circle.fill"
         case "error":
