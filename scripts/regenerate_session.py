@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -16,17 +15,7 @@ from report_export import (
     generate_formal_minutes_markdown,
 )
 from report_generation import generate_structured_report
-
-
-def anonymous_speaker_label(raw: str, fallback: str = "") -> str:
-    if raw == "UNKNOWN":
-        return "未知说话人"
-    if raw == "TEXT":
-        return "转录文本"
-    match = re.fullmatch(r"SPEAKER[_\s-]?(\d+)", raw, re.IGNORECASE)
-    if match:
-        return f"说话人{int(match.group(1)) + 1}"
-    return fallback or raw
+from speaker_naming import anonymous_speaker_label
 
 
 def save_speaker_map(session_path: Path, speaker_map: dict[str, str]) -> None:

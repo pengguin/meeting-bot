@@ -1,3 +1,4 @@
+import fcntl
 import os
 import re
 import json
@@ -33,11 +34,12 @@ from lark_oapi.api.im.v1 import (
 from chinese_text import simplify_chinese
 from asr_runtime import asr_runtime_description, create_asr_model, transcribe_with_asr_model
 from diarization_runtime import configure_diarization_pipeline, run_diarization_pipeline
+from llm_backend import llm_runtime_description, run_llm
+from speaker_naming import build_anonymous_speaker_map
 from meetingbot_config import (
     ASR_LANGUAGE,
     ASR_MODEL,
     BASE_DIR,
-    CODEX_BIN,
     DIARIZATION_MODEL,
     DOWNLOAD_DIR,
     FEISHU_APP_ID,
@@ -129,6 +131,7 @@ def write_runtime_status(
             "latest_html": latest_html,
             "latest_md": latest_md,
             "updated_at": runtime_timestamp(),
+            "source": "feishu_bot",
         }
 
         tmp_path = RUNTIME_DIR / f".status_{uuid.uuid4().hex}.json.tmp"
@@ -165,11 +168,35 @@ def write_session_runtime_status(
     )
 
 
+def local_meeting_task_is_alive() -> bool:
+    """通过 local_meeting.lock 的 flock 判断本地新增会议任务是否仍在运行。"""
+    lock_path = RUNTIME_DIR / "local_meeting.lock"
+    if not lock_path.exists():
+        return False
+
+    try:
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return False
+    except OSError:
+        return False
+
+
 def write_idle_runtime_status_if_no_active_task() -> None:
+    # bot 启动时自身没有任务在跑；状态若为 processing，只有当持锁的
+    # 本地新增会议进程确实存活时才保留，否则视为上次任务崩溃遗留的
+    # 陈旧状态，重置为 idle，避免状态栏永远显示"处理中"。
     try:
         if RUNTIME_STATUS_FILE.exists():
             current = json.loads(RUNTIME_STATUS_FILE.read_text(encoding="utf-8"))
-            if current.get("task_status") == "processing":
+            if (
+                current.get("task_status") == "processing"
+                and local_meeting_task_is_alive()
+            ):
                 return
     except (OSError, json.JSONDecodeError):
         pass
@@ -822,18 +849,9 @@ def build_default_speaker_map(
     merged_segments: List[Dict],
     session_path: Path,
 ) -> Dict[str, str]:
-    speakers = []
-    for seg in merged_segments:
-        speaker = seg["speaker"]
-        if speaker not in speakers and speaker != "UNKNOWN":
-            speakers.append(speaker)
-
-    speaker_map = {}
-    for idx, speaker in enumerate(speakers, start=1):
-        speaker_map[speaker] = f"说话人{idx}"
-
-    if any(seg["speaker"] == "UNKNOWN" for seg in merged_segments):
-        speaker_map["UNKNOWN"] = "未知说话人"
+    speaker_map = build_anonymous_speaker_map(
+        seg["speaker"] for seg in merged_segments
+    )
 
     save_speaker_map(session_path, speaker_map)
     return speaker_map
@@ -1114,58 +1132,7 @@ def ensure_report_schema() -> Path:
 
 
 # ============================================================
-# 14. Codex 通用执行器
-# ============================================================
-
-def run_codex(
-    prompt: str,
-    output_path: Path,
-    schema_path: Optional[Path] = None,
-    timeout: int = 2400,
-) -> str:
-    cmd = [
-        CODEX_BIN,
-        "exec",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "read-only",
-        "--ephemeral",
-    ]
-
-    if schema_path is not None:
-        cmd.extend(["--output-schema", str(schema_path)])
-
-    cmd.extend(
-        [
-            "--output-last-message",
-            str(output_path),
-            "-",
-        ]
-    )
-
-    result = subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            "Codex 执行失败。\n"
-            f"STDOUT:\n{result.stdout}\n"
-            f"STDERR:\n{result.stderr}"
-        )
-
-    if not output_path.exists():
-        raise RuntimeError(f"Codex 未生成输出文件：{output_path.name}")
-
-    return output_path.read_text(encoding="utf-8").strip()
-
-
-# ============================================================
-# 15. Codex 判断会议类型
+# 14. LLM 判断会议类型（后端由 llm_backend 按 .env 配置选择）
 # ============================================================
 
 def classify_meeting_type(
@@ -1201,7 +1168,7 @@ def classify_meeting_type(
 {transcript_markdown}
 """.strip()
 
-    raw = run_codex(
+    raw = run_llm(
         prompt=prompt,
         output_path=output_path,
         schema_path=schema_path,
@@ -1324,7 +1291,7 @@ def generate_structured_report(
 {transcript_markdown}
 """.strip()
 
-    raw = run_codex(
+    raw = run_llm(
         prompt=prompt,
         output_path=output_path,
         schema_path=schema_path,
@@ -2310,7 +2277,7 @@ def main() -> None:
     print("2. 已启用机器人能力")
     print("3. 已订阅“接收消息 v2.0”")
     print("4. 机器人已加入私聊或测试群")
-    print("5. Codex CLI 已登录")
+    print(f"5. 纪要生成后端可用（{llm_runtime_description()}）")
     print("6. Hugging Face token 可用，pyannote 模型条款已接受")
     print("7. LibreOffice 可用，用于生成 PDF")
 

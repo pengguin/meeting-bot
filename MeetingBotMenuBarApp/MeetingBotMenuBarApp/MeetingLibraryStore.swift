@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 
 struct MeetingRecord: Identifiable, Equatable {
@@ -1298,10 +1299,17 @@ final class MeetingLibraryStore: ObservableObject {
 
         isCancellingLocalMeeting = true
         localMeetingCreationMessage = "正在中止处理"
-        process.terminate()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
+
+        // create_local_meeting.py 已通过 setsid 自成进程组；
+        // 整组发信号可同时结束 ffmpeg、LLM、LibreOffice 等子进程。
+        let pid = process.processIdentifier
+        if kill(-pid, SIGTERM) != 0 {
+            process.terminate()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
             if process.isRunning {
-                process.interrupt()
+                _ = kill(-pid, SIGKILL)
+                _ = kill(pid, SIGKILL)
             }
         }
     }
@@ -1319,7 +1327,48 @@ final class MeetingLibraryStore: ObservableObject {
         }
     }
 
+    private func currentRuntimeStatusPayload() -> [String: Any]? {
+        let statusURL = AppPaths.projectRoot.appendingPathComponent("runtime/status.json")
+        guard let data = try? Data(contentsOf: statusURL),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return payload
+    }
+
+    /// 中止后若 SIGKILL 抢在脚本自身清理之前，半成品会话目录会残留；
+    /// 根据状态文件记录的 session_dir 兜底删除。
+    private func cleanupCancelledLocalMeetingArtifacts() {
+        guard let payload = currentRuntimeStatusPayload(),
+              (payload["source"] as? String) == "local_meeting",
+              (payload["task_status"] as? String) == "processing",
+              let sessionDir = payload["session_dir"] as? String,
+              !sessionDir.isEmpty else {
+            return
+        }
+
+        let sessionURL = URL(fileURLWithPath: sessionDir).standardizedFileURL
+        let sessionsRoot = AppPaths.sessionsDirectory.standardizedFileURL
+        let rootPrefix = sessionsRoot.path.hasSuffix("/")
+            ? sessionsRoot.path
+            : sessionsRoot.path + "/"
+        guard sessionURL.path.hasPrefix(rootPrefix),
+              sessionURL.path != sessionsRoot.path else {
+            return
+        }
+        try? fileManager.removeItem(at: sessionURL)
+    }
+
     private func writeIdleRuntimeStatus() {
+        cleanupCancelledLocalMeetingArtifacts()
+
+        if let payload = currentRuntimeStatusPayload(),
+           (payload["source"] as? String) == "feishu_bot",
+           (payload["task_status"] as? String) == "processing" {
+            // 飞书机器人正在处理自己的任务，不要覆盖它的状态。
+            return
+        }
+
         let statusURL = AppPaths.projectRoot.appendingPathComponent("runtime/status.json")
         let payload: [String: String] = [
             "service_status": "running",
@@ -1333,6 +1382,7 @@ final class MeetingLibraryStore: ObservableObject {
             "latest_html": "",
             "latest_md": "",
             "updated_at": DateDisplay.storageString(from: Date()),
+            "source": "menu_bar_app",
         ]
 
         do {

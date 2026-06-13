@@ -1,10 +1,9 @@
 import json
-import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
+from llm_backend import run_llm
 from meetingbot_config import (
-    CODEX_BIN,
     SCHEMA_DIR,
     get_allowed_templates,
     get_template_descriptions,
@@ -183,47 +182,6 @@ def ensure_report_schema() -> Path:
     return schema_path
 
 
-def run_codex(
-    prompt: str,
-    output_path: Path,
-    schema_path: Optional[Path] = None,
-    timeout: int = 2400,
-) -> str:
-    cmd = [
-        CODEX_BIN,
-        "exec",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "read-only",
-        "--ephemeral",
-    ]
-
-    if schema_path is not None:
-        cmd.extend(["--output-schema", str(schema_path)])
-
-    cmd.extend(["--output-last-message", str(output_path), "-"])
-
-    result = subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            "Codex 执行失败。\n"
-            f"STDOUT:\n{result.stdout}\n"
-            f"STDERR:\n{result.stderr}"
-        )
-
-    if not output_path.exists():
-        raise RuntimeError(f"Codex 未生成输出文件：{output_path.name}")
-
-    return output_path.read_text(encoding="utf-8").strip()
-
-
 def classify_meeting_type(
     transcript_markdown: str,
     session_path: Path,
@@ -257,7 +215,7 @@ def classify_meeting_type(
 {transcript_markdown}
 """.strip()
 
-    raw = run_codex(
+    raw = run_llm(
         prompt=prompt,
         output_path=output_path,
         schema_path=schema_path,
@@ -368,7 +326,7 @@ def generate_structured_report(
 {transcript_markdown}
 """.strip()
 
-    raw = run_codex(
+    raw = run_llm(
         prompt=prompt,
         output_path=output_path,
         schema_path=schema_path,

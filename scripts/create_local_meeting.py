@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -47,6 +48,7 @@ from session_store import (
     read_text_file,
     write_session_metadata,
 )
+from speaker_naming import build_anonymous_speaker_map
 from transcript_material import (
     create_text_segments_from_transcript,
     normalize_uploaded_transcript_text,
@@ -75,10 +77,14 @@ def runtime_timestamp() -> str:
 
 
 def emit_progress(stage: str, message: str) -> None:
-    print(
-        json.dumps({"progress": {"stage": stage, "message": message}}, ensure_ascii=False),
-        flush=True,
-    )
+    try:
+        print(
+            json.dumps({"progress": {"stage": stage, "message": message}}, ensure_ascii=False),
+            flush=True,
+        )
+    except OSError:
+        # 中止后 stdout 管道可能已被宿主 App 关闭。
+        pass
 
 
 def write_runtime_status(
@@ -104,6 +110,7 @@ def write_runtime_status(
         "latest_html": str(latest_html) if latest_html else "",
         "latest_md": str(latest_md) if latest_md else "",
         "updated_at": runtime_timestamp(),
+        "source": "local_meeting",
     }
     tmp_path = RUNTIME_DIR / f".status_{uuid.uuid4().hex}.json.tmp"
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -340,14 +347,9 @@ def assign_speakers_to_transcript(
 
 
 def build_default_speaker_map(merged_segments: List[Dict], session_path: Path) -> Dict[str, str]:
-    speakers: List[str] = []
-    for segment in merged_segments:
-        speaker = segment["speaker"]
-        if speaker not in speakers and speaker != "UNKNOWN":
-            speakers.append(speaker)
-    speaker_map = {speaker: f"说话人{index}" for index, speaker in enumerate(speakers, start=1)}
-    if any(segment["speaker"] == "UNKNOWN" for segment in merged_segments):
-        speaker_map["UNKNOWN"] = "未知说话人"
+    speaker_map = build_anonymous_speaker_map(
+        segment["speaker"] for segment in merged_segments
+    )
     (session_path / "speaker_map.json").write_text(
         json.dumps(speaker_map, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -577,7 +579,25 @@ def generate_outputs(
     }
 
 
+def become_process_group_leader() -> None:
+    # 自成进程组，宿主 App 中止时可整组终止（含 ffmpeg、LLM、LibreOffice 等子进程）。
+    try:
+        os.setsid()
+    except OSError:
+        pass
+
+
+def install_termination_handler() -> None:
+    def handle_termination(_signum, _frame):
+        raise SystemExit(143)
+
+    signal.signal(signal.SIGTERM, handle_termination)
+
+
 def main() -> None:
+    become_process_group_leader()
+    install_termination_handler()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--title", default="")
     parser.add_argument("--audio", default="")
@@ -623,6 +643,16 @@ def main() -> None:
             formats=formats,
         )
         print(json.dumps(result, ensure_ascii=False))
+    except (KeyboardInterrupt, SystemExit):
+        # 用户中止：清理本次创建的半成品会话目录，避免残留占用磁盘。
+        if session_path is not None:
+            shutil.rmtree(session_path, ignore_errors=True)
+        write_runtime_status(
+            "idle",
+            "idle",
+            "新增会议处理已中止",
+        )
+        raise
     except Exception as error:
         write_runtime_status(
             "error",

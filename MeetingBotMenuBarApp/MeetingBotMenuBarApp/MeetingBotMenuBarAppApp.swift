@@ -42,16 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusIconAnimationTimer: Timer?
     private var processingAnimationFrame = 0
 
-    private static let processingAnimationProgress: [Double] = [
-        0, 0.25, 0.5, 0.75, 1,
-        1, 1, 1, 1, 1,
-        1, 1, 1, 1, 1,
-    ]
-    private static let processingPulseOffsets: [CGFloat] = [
-        0, 1.5, 0, -1, 0,
-        0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0,
-    ]
+    private static let processingAnimationFrameCount = 24
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -312,7 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return
             }
             self.processingAnimationFrame =
-                (self.processingAnimationFrame + 1) % Self.processingAnimationProgress.count
+                (self.processingAnimationFrame + 1) % Self.processingAnimationFrameCount
             self.renderStatusIcon()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -333,27 +324,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         iconStyle: StatusBarIconStyle,
         tintColor: NSColor
     ) -> NSImage? {
-        let progress = Self.processingAnimationProgress[processingAnimationFrame]
-        guard let image = NSImage(
-            systemSymbolName: iconStyle.animatedProcessingSymbol,
-            variableValue: progress,
-            accessibilityDescription: "正在处理会议"
-        ) else {
-            return nil
+        let phase = CGFloat(processingAnimationFrame)
+            / CGFloat(Self.processingAnimationFrameCount) * 2 * .pi
+
+        switch iconStyle {
+        case .waveform:
+            return Self.equalizerStatusImage(tint: tintColor, phase: phase)
+        case .pulse:
+            return Self.bouncingDotsStatusImage(tint: tintColor, phase: phase)
         }
+    }
 
-        let configuredImage = image.withSymbolConfiguration(
-            NSImage.SymbolConfiguration(paletteColors: [tintColor])
-        ) ?? image
-        let tintedImage = configuredImage.tinted(with: tintColor)
+    /// 均衡器样式：5 根圆角竖条按行波相位起伏，模拟正在播放的音频电平。
+    private static func equalizerStatusImage(tint: NSColor, phase: CGFloat) -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size, flipped: false) { _ in
+            let barCount = 5
+            let barWidth: CGFloat = 2.4
+            let gap: CGFloat = 1.2
+            let totalWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * gap
+            var x = (size.width - totalWidth) / 2
+            let midY = size.height / 2
 
-        guard iconStyle == .pulse else {
-            return tintedImage
+            tint.setFill()
+            for index in 0..<barCount {
+                let wave = sin(phase - CGFloat(index) * 0.85)
+                let height = 5 + 4.5 * (1 + wave)
+                let rect = NSRect(
+                    x: x,
+                    y: midY - height / 2,
+                    width: barWidth,
+                    height: height
+                )
+                NSBezierPath(
+                    roundedRect: rect,
+                    xRadius: barWidth / 2,
+                    yRadius: barWidth / 2
+                ).fill()
+                x += barWidth + gap
+            }
+            return true
         }
+        image.isTemplate = false
+        image.accessibilityDescription = "正在处理会议"
+        return image
+    }
 
-        return tintedImage.offsetVertically(
-            by: Self.processingPulseOffsets[processingAnimationFrame]
-        )
+    /// 脉冲样式：3 个圆点依次弹跳，类似输入中指示器。
+    private static func bouncingDotsStatusImage(tint: NSColor, phase: CGFloat) -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size, flipped: false) { _ in
+            let dotCount = 3
+            let radius: CGFloat = 2.1
+            let spacing: CGFloat = 5.6
+            let firstX = size.width / 2 - spacing
+
+            tint.setFill()
+            for index in 0..<dotCount {
+                let bounce = abs(sin(phase - CGFloat(index) * 1.05))
+                let centerY = 6.5 + 4.5 * bounce
+                let rect = NSRect(
+                    x: firstX + CGFloat(index) * spacing - radius,
+                    y: centerY - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                )
+                NSBezierPath(ovalIn: rect).fill()
+            }
+            return true
+        }
+        image.isTemplate = false
+        image.accessibilityDescription = "正在处理会议"
+        return image
     }
 
     private func statusBarIconColorMode() -> StatusBarIconColorMode {
@@ -756,21 +798,4 @@ private extension NSImage {
         return output
     }
 
-    func offsetVertically(by offset: CGFloat) -> NSImage {
-        guard offset != 0 else {
-            return self
-        }
-
-        let output = NSImage(size: size)
-        output.lockFocus()
-        draw(
-            in: NSRect(x: 0, y: offset, width: size.width, height: size.height),
-            from: .zero,
-            operation: .sourceOver,
-            fraction: 1
-        )
-        output.unlockFocus()
-        output.isTemplate = false
-        return output
-    }
 }

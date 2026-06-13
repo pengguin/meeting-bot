@@ -64,10 +64,6 @@ enum StatusBarIconStyle: String, CaseIterable, Identifiable {
         symbol(launchStatus: .running, taskStatus: nil)
     }
 
-    var animatedProcessingSymbol: String {
-        idleSymbol
-    }
-
     func symbol(launchStatus: LaunchAgentStatus, taskStatus: String?) -> String {
         if launchStatus == .missing || launchStatus == .stopped {
             return alertSymbol
@@ -182,6 +178,74 @@ enum MainWindowTabKind: String, CaseIterable, Identifiable {
     }
 }
 
+enum LLMProviderOption: String, CaseIterable, Identifiable {
+    case codex
+    case openai
+    case anthropic
+    case lmStudio = "lm-studio"
+    case ollama
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .codex:
+            return "Codex CLI"
+        case .openai:
+            return "OpenAI 兼容 API"
+        case .anthropic:
+            return "Anthropic API"
+        case .lmStudio:
+            return "LM Studio（本地）"
+        case .ollama:
+            return "Ollama（本地）"
+        }
+    }
+
+    var defaultAPIBase: String {
+        switch self {
+        case .codex:
+            return ""
+        case .openai:
+            return "https://api.openai.com/v1"
+        case .anthropic:
+            return "https://api.anthropic.com"
+        case .lmStudio:
+            return "http://127.0.0.1:1234/v1"
+        case .ollama:
+            return "http://127.0.0.1:11434/v1"
+        }
+    }
+
+    var requiresAPIKey: Bool {
+        switch self {
+        case .openai, .anthropic:
+            return true
+        case .codex, .lmStudio, .ollama:
+            return false
+        }
+    }
+
+    var usesHTTPAPI: Bool {
+        self != .codex
+    }
+
+    var configHint: String {
+        switch self {
+        case .codex:
+            return "使用本机 Codex CLI 生成纪要，需要先完成 codex 登录。"
+        case .openai:
+            return "兼容 OpenAI Chat Completions 协议的服务均可使用（OpenAI、DeepSeek、Kimi、通义千问、智谱等），需填写 API Key 和模型名。"
+        case .anthropic:
+            return "使用 Anthropic Messages API，需填写 API Key；模型默认 claude-sonnet-4-6。"
+        case .lmStudio:
+            return "连接本机 LM Studio 服务（默认端口 1234），模型留空时自动使用已加载的模型。"
+        case .ollama:
+            return "连接本机 Ollama 服务（默认端口 11434），模型留空时自动使用已安装的第一个模型。"
+        }
+    }
+}
+
 final class RuntimeConfigStore: ObservableObject {
     @Published var feishuAppID = ""
     @Published var feishuAppSecret = ""
@@ -192,6 +256,10 @@ final class RuntimeConfigStore: ObservableObject {
     @Published var diarizationModel = "pyannote/speaker-diarization-community-1"
     @Published var codexBin = "codex"
     @Published var ffmpegBin = "ffmpeg"
+    @Published var llmProvider = LLMProviderOption.codex.rawValue
+    @Published var llmApiBase = ""
+    @Published var llmApiKey = ""
+    @Published var llmModel = ""
     @Published var recordingsDirectory = AppPaths.defaultRecordingsDirectory.path
     @Published var meetingOutputsDirectory = AppPaths.defaultMeetingOutputsDirectory.path
     @Published private(set) var lastSaveMessage: String?
@@ -220,6 +288,10 @@ final class RuntimeConfigStore: ObservableObject {
         diarizationModel = values["DIARIZATION_MODEL"] ?? "pyannote/speaker-diarization-community-1"
         codexBin = values["CODEX_BIN"] ?? "codex"
         ffmpegBin = values["FFMPEG_BIN"] ?? "ffmpeg"
+        llmProvider = values["LLM_PROVIDER"] ?? LLMProviderOption.codex.rawValue
+        llmApiBase = values["LLM_API_BASE"] ?? ""
+        llmApiKey = values["LLM_API_KEY"] ?? ""
+        llmModel = values["LLM_MODEL"] ?? ""
         recordingsDirectory = normalizedStoragePath(
             values["RECORDINGS_DIR"],
             defaultURL: AppPaths.defaultRecordingsDirectory
@@ -272,6 +344,10 @@ final class RuntimeConfigStore: ObservableObject {
         values["DIARIZATION_MODEL"] = diarizationModel
         values["CODEX_BIN"] = codexBin
         values["FFMPEG_BIN"] = ffmpegBin
+        values["LLM_PROVIDER"] = llmProvider
+        values["LLM_API_BASE"] = llmApiBase
+        values["LLM_API_KEY"] = llmApiKey
+        values["LLM_MODEL"] = llmModel
         values["RECORDINGS_DIR"] = nextRecordingsDirectory.path
         values["MEETING_OUTPUT_DIR"] = nextMeetingOutputsDirectory.path
 
@@ -285,6 +361,10 @@ final class RuntimeConfigStore: ObservableObject {
             "DIARIZATION_MODEL",
             "CODEX_BIN",
             "FFMPEG_BIN",
+            "LLM_PROVIDER",
+            "LLM_API_BASE",
+            "LLM_API_KEY",
+            "LLM_MODEL",
             "RECORDINGS_DIR",
             "MEETING_OUTPUT_DIR",
         ]
@@ -359,6 +439,10 @@ struct RuntimeConfigDraft {
     var diarizationModel = "pyannote/speaker-diarization-community-1"
     var codexBin = "codex"
     var ffmpegBin = "ffmpeg"
+    var llmProvider = LLMProviderOption.codex.rawValue
+    var llmApiBase = ""
+    var llmApiKey = ""
+    var llmModel = ""
     var recordingsDirectory = AppPaths.defaultRecordingsDirectory.path
     var meetingOutputsDirectory = AppPaths.defaultMeetingOutputsDirectory.path
 
@@ -374,6 +458,10 @@ struct RuntimeConfigDraft {
         diarizationModel = store.diarizationModel
         codexBin = store.codexBin
         ffmpegBin = store.ffmpegBin
+        llmProvider = store.llmProvider
+        llmApiBase = store.llmApiBase
+        llmApiKey = store.llmApiKey
+        llmModel = store.llmModel
         recordingsDirectory = store.recordingsDirectory
         meetingOutputsDirectory = store.meetingOutputsDirectory
     }
@@ -388,6 +476,10 @@ struct RuntimeConfigDraft {
         store.diarizationModel = diarizationModel
         store.codexBin = codexBin
         store.ffmpegBin = ffmpegBin
+        store.llmProvider = llmProvider
+        store.llmApiBase = llmApiBase
+        store.llmApiKey = llmApiKey
+        store.llmModel = llmModel
         store.recordingsDirectory = recordingsDirectory
         store.meetingOutputsDirectory = meetingOutputsDirectory
     }
@@ -951,6 +1043,60 @@ struct SettingsWindowView: View {
                         .textFieldStyle(.roundedBorder)
                     }
                 case .toolPaths:
+                    settingsCard("纪要生成（LLM 后端）") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            settingsField("生成后端") {
+                                Picker("", selection: $configDraft.llmProvider) {
+                                    ForEach(LLMProviderOption.allCases) { option in
+                                        Text(option.title).tag(option.rawValue)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                            } hint: {
+                                Text(selectedLLMProvider.configHint)
+                            }
+
+                            if selectedLLMProvider.usesHTTPAPI {
+                                settingsField("API 地址") {
+                                    TextField(
+                                        selectedLLMProvider.defaultAPIBase.isEmpty
+                                            ? "https://…"
+                                            : "留空使用 \(selectedLLMProvider.defaultAPIBase)",
+                                        text: $configDraft.llmApiBase
+                                    )
+                                } hint: {
+                                    Text("留空时使用所选后端的默认地址。")
+                                }
+
+                                settingsField("API Key") {
+                                    SensitiveTextField(
+                                        placeholder: selectedLLMProvider.requiresAPIKey
+                                            ? "必填"
+                                            : "本地服务一般无需填写",
+                                        text: $configDraft.llmApiKey
+                                    )
+                                } hint: {
+                                    Text("仅保存在本机 `.env` 中。")
+                                }
+
+                                settingsField("模型") {
+                                    TextField(
+                                        selectedLLMProvider == .anthropic
+                                            ? "留空使用 claude-sonnet-4-6"
+                                            : (selectedLLMProvider == .openai
+                                                ? "如 gpt-4o-mini / deepseek-chat"
+                                                : "留空自动使用已加载模型"),
+                                        text: $configDraft.llmModel
+                                    )
+                                } hint: {
+                                    Text("OpenAI 兼容服务必须填写模型名；本地服务可留空自动选择。")
+                                }
+                            }
+                        }
+                        .textFieldStyle(.roundedBorder)
+                    }
+
                     settingsCard("工具路径") {
                         VStack(alignment: .leading, spacing: 12) {
                             settingsField("Codex CLI") {
@@ -1007,6 +1153,10 @@ struct SettingsWindowView: View {
         } message: {
             Text(storageMigrationNotice ?? "")
         }
+    }
+
+    private var selectedLLMProvider: LLMProviderOption {
+        LLMProviderOption(rawValue: configDraft.llmProvider) ?? .codex
     }
 
     private var asrModelOptions: [String] {

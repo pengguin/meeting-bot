@@ -174,7 +174,7 @@ enum ConnectivityCheckStatus {
 final class SetupWizardStore: ObservableObject {
     @Published private(set) var feishuStatus: ConnectivityCheckStatus = .idle
     @Published private(set) var huggingFaceStatus: ConnectivityCheckStatus = .idle
-    @Published private(set) var codexStatus: ConnectivityCheckStatus = .idle
+    @Published private(set) var llmStatus: ConnectivityCheckStatus = .idle
     @Published private(set) var isChecking = false
 
     func runConnectivityChecks(config: RuntimeConfigStore) {
@@ -185,7 +185,13 @@ final class SetupWizardStore: ObservableObject {
         isChecking = true
         feishuStatus = .running
         huggingFaceStatus = .running
-        codexStatus = .running
+        llmStatus = .running
+
+        let provider = LLMProviderOption(rawValue: config.llmProvider) ?? .codex
+        let codexBinary = config.codexBin
+        let apiBase = config.llmApiBase
+        let apiKey = config.llmApiKey
+        let model = config.llmModel
 
         Task {
             async let feishu = Self.checkFeishu(
@@ -193,17 +199,23 @@ final class SetupWizardStore: ObservableObject {
                 appSecret: config.feishuAppSecret
             )
             async let huggingFace = Self.checkHuggingFace(token: config.hfToken)
-            async let codex = Self.checkCodex(binary: config.codexBin)
+            async let llm = Self.checkLLMBackend(
+                provider: provider,
+                codexBinary: codexBinary,
+                apiBase: apiBase,
+                apiKey: apiKey,
+                model: model
+            )
 
             feishuStatus = await feishu
             huggingFaceStatus = await huggingFace
-            codexStatus = await codex
+            llmStatus = await llm
             isChecking = false
         }
     }
 
     var allPassed: Bool {
-        [feishuStatus, huggingFaceStatus, codexStatus].allSatisfy {
+        [feishuStatus, huggingFaceStatus, llmStatus].allSatisfy {
             if case .passed = $0 {
                 return true
             }
@@ -271,6 +283,132 @@ final class SetupWizardStore: ObservableObject {
             return .failed("Hugging Face 返回 \(httpResponse.statusCode)")
         } catch {
             return .failed("Hugging Face 连接失败：\(error.localizedDescription)")
+        }
+    }
+
+    private static func checkLLMBackend(
+        provider: LLMProviderOption,
+        codexBinary: String,
+        apiBase: String,
+        apiKey: String,
+        model: String
+    ) async -> ConnectivityCheckStatus {
+        switch provider {
+        case .codex:
+            return await checkCodex(binary: codexBinary)
+        case .anthropic:
+            return await checkAnthropic(apiBase: apiBase, apiKey: apiKey)
+        case .openai, .lmStudio, .ollama:
+            return await checkOpenAICompatible(
+                provider: provider,
+                apiBase: apiBase,
+                apiKey: apiKey,
+                model: model
+            )
+        }
+    }
+
+    private nonisolated static func normalizedAPIBase(
+        _ raw: String,
+        provider: LLMProviderOption
+    ) -> String {
+        var base = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty {
+            base = provider.defaultAPIBase
+        }
+        while base.hasSuffix("/") {
+            base.removeLast()
+        }
+        return base
+    }
+
+    private static func checkOpenAICompatible(
+        provider: LLMProviderOption,
+        apiBase: String,
+        apiKey: String,
+        model: String
+    ) async -> ConnectivityCheckStatus {
+        if provider == .openai, apiKey.isEmpty {
+            return .failed("请先填写 API Key")
+        }
+        if provider == .openai, model.isEmpty {
+            return .failed("请先填写模型名称")
+        }
+
+        let base = normalizedAPIBase(apiBase, provider: provider)
+        guard let url = URL(string: "\(base)/models") else {
+            return .failed("API 地址无效")
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                return .failed("未收到服务响应")
+            }
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                return .failed("API Key 无效（HTTP \(httpResponse.statusCode)）")
+            }
+            guard httpResponse.statusCode == 200 else {
+                return .failed("服务返回 HTTP \(httpResponse.statusCode)")
+            }
+
+            if provider == .lmStudio || provider == .ollama {
+                let items = ((try? JSONSerialization.jsonObject(with: data)
+                    as? [String: Any])?["data"] as? [[String: Any]]) ?? []
+                if items.isEmpty {
+                    return .failed("服务可达，但没有可用模型，请先在服务端加载模型")
+                }
+                if model.isEmpty, let first = items.first?["id"] as? String {
+                    return .passed("服务可达，将自动使用模型：\(first)")
+                }
+            }
+            return .passed("服务可达，配置有效")
+        } catch {
+            return .failed("无法连接：\(error.localizedDescription)")
+        }
+    }
+
+    private static func checkAnthropic(
+        apiBase: String,
+        apiKey: String
+    ) async -> ConnectivityCheckStatus {
+        guard !apiKey.isEmpty else {
+            return .failed("请先填写 API Key")
+        }
+
+        var base = normalizedAPIBase(apiBase, provider: .anthropic)
+        if !base.hasSuffix("/v1") {
+            base += "/v1"
+        }
+        guard let url = URL(string: "\(base)/models") else {
+            return .failed("API 地址无效")
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                return .failed("未收到服务响应")
+            }
+            if httpResponse.statusCode == 200 {
+                return .passed("API Key 有效")
+            }
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                return .failed("API Key 无效")
+            }
+            return .failed("服务返回 HTTP \(httpResponse.statusCode)")
+        } catch {
+            return .failed("无法连接：\(error.localizedDescription)")
         }
     }
 
@@ -486,13 +624,48 @@ struct SetupWizardWindowView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private var selectedLLMProvider: LLMProviderOption {
+        LLMProviderOption(rawValue: configStore.llmProvider) ?? .codex
+    }
+
     private var credentialsStep: some View {
         VStack(alignment: .leading, spacing: 12) {
             TextField("飞书 App ID", text: $configStore.feishuAppID)
             SensitiveTextField(placeholder: "飞书 App Secret", text: $configStore.feishuAppSecret)
             SensitiveTextField(placeholder: "Hugging Face Token", text: $configStore.hfToken)
             Divider()
-            TextField("Codex 可执行文件", text: $configStore.codexBin)
+
+            Picker("纪要生成后端", selection: $configStore.llmProvider) {
+                ForEach(LLMProviderOption.allCases) { option in
+                    Text(option.title).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            Text(selectedLLMProvider.configHint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if selectedLLMProvider == .codex {
+                TextField("Codex 可执行文件", text: $configStore.codexBin)
+            } else {
+                TextField(
+                    "LLM API 地址（留空使用 \(selectedLLMProvider.defaultAPIBase)）",
+                    text: $configStore.llmApiBase
+                )
+                SensitiveTextField(
+                    placeholder: selectedLLMProvider.requiresAPIKey
+                        ? "LLM API Key（必填）"
+                        : "LLM API Key（本地服务一般无需填写）",
+                    text: $configStore.llmApiKey
+                )
+                TextField(
+                    selectedLLMProvider == .openai
+                        ? "模型名（如 gpt-4o-mini / deepseek-chat）"
+                        : "模型名（可留空自动选择）",
+                    text: $configStore.llmModel
+                )
+            }
+
             TextField("ffmpeg 可执行文件", text: $configStore.ffmpegBin)
             Text("这些配置会保存在本机 `.env` 中。Hugging Face Token 还需要对应账号已接受 pyannote 模型条款。")
                 .font(.caption)
@@ -540,15 +713,15 @@ struct SetupWizardWindowView: View {
                 status: wizardStore.huggingFaceStatus
             )
             connectivityRow(
-                title: "Codex CLI",
-                status: wizardStore.codexStatus
+                title: "纪要生成后端（\(selectedLLMProvider.title)）",
+                status: wizardStore.llmStatus
             )
 
             if wizardStore.allPassed {
                 Text("配置和连通性均已通过，可以开始使用。")
                     .foregroundStyle(.green)
             } else {
-                Text("点击“运行检查”后，会验证飞书凭据、Hugging Face 模型访问和 Codex CLI 登录状态。")
+                Text("点击“运行检查”后，会验证飞书凭据、Hugging Face 模型访问和纪要生成后端的可用性。")
                     .foregroundStyle(.secondary)
             }
         }

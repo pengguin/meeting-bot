@@ -49,6 +49,15 @@ def resolve_tool_path(raw_value: str, fallback: str) -> str:
 
 CODEX_BIN = resolve_tool_path(os.getenv("CODEX_BIN", "codex"), "codex")
 FFMPEG_BIN = resolve_tool_path(os.getenv("FFMPEG_BIN", "ffmpeg"), "ffmpeg")
+
+# 纪要生成 LLM 后端：codex（默认）/ openai（任意 OpenAI 兼容服务）/
+# anthropic / lm-studio / ollama。
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "codex").strip().lower() or "codex"
+LLM_API_BASE = os.getenv("LLM_API_BASE", "").strip().rstrip("/")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
+LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
+LLM_TIMEOUT_SECONDS = positive_env_int("LLM_TIMEOUT_SECONDS", 600)
+
 REPORT_BODY_FONT = os.getenv("REPORT_BODY_FONT", "PingFang SC").strip() or "PingFang SC"
 REPORT_HEADING_FONT = os.getenv("REPORT_HEADING_FONT", REPORT_BODY_FONT).strip() or REPORT_BODY_FONT
 

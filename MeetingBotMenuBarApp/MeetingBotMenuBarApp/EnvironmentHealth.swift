@@ -30,14 +30,51 @@ enum EnvironmentHealthChecker {
                 command: env["FFMPEG_BIN"] ?? "ffmpeg"
             ),
             libreOfficeCheck(),
-            executableCheck(
+            llmBackendCheck(env),
+        ]
+    }
+
+    private static func llmBackendCheck(_ env: [String: String]) -> EnvironmentCheck {
+        let provider = (env["LLM_PROVIDER"] ?? "codex")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if provider.isEmpty || provider == "codex" {
+            return executableCheck(
                 id: "codex",
                 title: "Codex CLI",
                 detail: env["CODEX_BIN"] ?? "codex",
                 command: env["CODEX_BIN"] ?? "codex",
                 validationArguments: ["login", "status"]
-            ),
-        ]
+            )
+        }
+
+        // HTTP 后端：这里只校验配置完整性；网络连通性在首次配置向导中验证，
+        // 避免每两分钟的健康检查产生网络请求。
+        let apiKey = env["LLM_API_KEY"] ?? ""
+        let model = env["LLM_MODEL"] ?? ""
+        let needsKey = provider == "openai" || provider == "anthropic"
+        let needsModel = provider == "openai"
+        let missingKey = needsKey && apiKey.isEmpty
+        let missingModel = needsModel && model.isEmpty
+
+        var detail = "后端：\(provider)"
+        if !model.isEmpty {
+            detail += " / \(model)"
+        }
+        if missingKey {
+            detail += "（缺少 LLM_API_KEY）"
+        }
+        if missingModel {
+            detail += "（缺少 LLM_MODEL）"
+        }
+
+        return EnvironmentCheck(
+            id: "llm",
+            title: "纪要生成后端",
+            detail: detail,
+            isHealthy: !missingKey && !missingModel
+        )
     }
 
     private static func configCheck(_ env: [String: String]) -> EnvironmentCheck {

@@ -8,6 +8,8 @@
 - `asr_runtime.py`：faster-whisper 模型、线程、批量转写和解码参数的统一入口。
 - `diarization_runtime.py`：说话人分离设备选择及 Apple GPU/CPU 回退逻辑。
 - `transcription_progress.py`：语音转写百分比和已处理时长计算。
+- `llm_backend.py`：纪要生成 LLM 后端抽象（Codex CLI / OpenAI 兼容 API / Anthropic / LM Studio / Ollama）。
+- `speaker_naming.py`：匿名说话人标签的统一编号规则。
 - `MeetingBotMenuBarApp/`：macOS 菜单栏 App，用于安装、状态查看、服务控制和会议库管理。
 - `scripts/`：安装、自检、本地新增会议、重生成和补导出文件脚本。
 - `schemas/`：会议分类和会议报告的结构化输出 schema。
@@ -46,12 +48,28 @@ ASR_BATCH_SIZE=8
 ASR_BEAM_SIZE=5
 ```
 
+### 纪要生成 LLM 后端
+
+纪要生成默认使用本机 Codex CLI，也可以切换到其他后端（在 `.env` 或 App 设置页中配置）：
+
+```bash
+# 可选 codex / openai / anthropic / lm-studio / ollama
+LLM_PROVIDER=codex
+LLM_API_BASE=        # 留空使用所选后端默认地址
+LLM_API_KEY=         # openai / anthropic 必填
+LLM_MODEL=           # openai 兼容服务必填；本地服务可留空自动选择
+```
+
+- `openai`：任意兼容 OpenAI Chat Completions 协议的服务（OpenAI、DeepSeek、Kimi、通义千问、智谱等），把 `LLM_API_BASE` 指向对应服务地址即可。
+- `anthropic`：Anthropic Messages API，模型默认 `claude-sonnet-4-6`。
+- `lm-studio` / `ollama`：本地部署服务，分别默认连接 `127.0.0.1:1234` 和 `127.0.0.1:11434` 的 OpenAI 兼容端口；`LLM_MODEL` 留空时自动使用服务端已加载的模型。
+
 ## 常用验证
 
 ```bash
 python3 -m pytest tests
 bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhouse.sh scripts/doctor.sh scripts/install_optional_tools.sh scripts/preflight.sh scripts/upgrade.sh start_bot.sh
-python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py asr_runtime.py diarization_runtime.py transcription_progress.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
+python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
 ```
 
 ## 发布

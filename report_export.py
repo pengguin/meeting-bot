@@ -14,6 +14,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from meetingbot_config import REPORT_BODY_FONT, REPORT_HEADING_FONT, get_template_names
+from speaker_naming import anonymous_speaker_label
 
 
 # ============================================================
@@ -711,19 +712,6 @@ def add_speaker_mapping_table(
     apply_run_style(r, size=8.8, color="6B7280")
 
     add_spacer(doc, 3)
-
-
-def anonymous_speaker_label(raw: str, fallback: str = "") -> str:
-    if raw == "UNKNOWN":
-        return "未知说话人"
-    if raw == "TEXT":
-        return "转录文本"
-
-    match = re.fullmatch(r"SPEAKER[_\s-]?(\d+)", raw, re.IGNORECASE)
-    if match:
-        return f"说话人{int(match.group(1)) + 1}"
-
-    return fallback or raw
 
 
 def add_report_notes(doc: Document, report: Dict) -> None:
