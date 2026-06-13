@@ -21,6 +21,44 @@ struct MainWindowView: View {
     }
 
     var body: some View {
+        Group {
+            if showOverviewTab {
+                legacyTabbedBody
+            } else {
+                libraryView
+            }
+        }
+        .frame(minWidth: 1080, minHeight: 680)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .tint(.brandAccent)
+        .preferredColorScheme(resolvedColorScheme)
+        .onAppear {
+            normalizeSelection()
+            AppAppearance.synchronizeWindows(for: preferredMainColorScheme)
+        }
+        .onChange(of: showOverviewTab) { _, _ in
+            normalizeSelection()
+        }
+        .onChange(of: mainTabOrderRaw) { _, _ in
+            normalizeSelection()
+        }
+        .onChange(of: preferredMainColorScheme) { _, newValue in
+            AppAppearance.synchronizeWindows(for: newValue)
+        }
+    }
+
+    private var libraryView: some View {
+        MeetingLibraryView(
+            store: libraryStore,
+            templateStore: templateStore,
+            openTranscriptWindow: openTranscriptWindow,
+            openNewMeetingWindow: openNewMeetingWindow,
+            openSettingsWindow: openSettingsWindow,
+            preferredColorScheme: $preferredMainColorScheme
+        )
+    }
+
+    private var legacyTabbedBody: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 ForEach(visibleTabs) { tab in
@@ -38,7 +76,7 @@ struct MainWindowView: View {
                                 RoundedRectangle(cornerRadius: 8)
                                     .fill(
                                         selectedTab == tab
-                                            ? Color.accentColor.opacity(0.14)
+                                            ? Color.brandAccent.opacity(0.14)
                                             : Color.clear
                                     )
                             )
@@ -81,12 +119,7 @@ struct MainWindowView: View {
                         selectedTab: $selectedTab
                     )
                 case .library:
-                    MeetingLibraryView(
-                        store: libraryStore,
-                        templateStore: templateStore,
-                        openTranscriptWindow: openTranscriptWindow,
-                        openNewMeetingWindow: openNewMeetingWindow
-                    )
+                    libraryView
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -94,22 +127,6 @@ struct MainWindowView: View {
             Divider()
 
             mainStatusBar
-        }
-        .frame(minWidth: 1080, minHeight: 680)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .preferredColorScheme(resolvedColorScheme)
-        .onAppear {
-            normalizeSelection()
-            AppAppearance.synchronizeWindows(for: preferredMainColorScheme)
-        }
-        .onChange(of: showOverviewTab) { _, _ in
-            normalizeSelection()
-        }
-        .onChange(of: mainTabOrderRaw) { _, _ in
-            normalizeSelection()
-        }
-        .onChange(of: preferredMainColorScheme) { _, newValue in
-            AppAppearance.synchronizeWindows(for: newValue)
         }
     }
 
@@ -561,6 +578,28 @@ private struct MainOverviewView: View {
     }
 }
 
+fileprivate func cycledAppearanceMode(after current: String) -> String {
+    switch current {
+    case "system":
+        return "light"
+    case "light":
+        return "dark"
+    default:
+        return "system"
+    }
+}
+
+fileprivate func appearanceModeSymbol(_ mode: String) -> String {
+    switch mode {
+    case "light":
+        return "sun.max"
+    case "dark":
+        return "moon"
+    default:
+        return "circle.lefthalf.filled"
+    }
+}
+
 private struct MeetingLibraryView: View {
     private enum NavigationColumn: Hashable {
         case folders
@@ -571,6 +610,8 @@ private struct MeetingLibraryView: View {
     @ObservedObject var templateStore: MeetingTemplateCatalogStore
     let openTranscriptWindow: (MeetingRecord) -> Void
     let openNewMeetingWindow: () -> Void
+    let openSettingsWindow: () -> Void
+    @Binding var preferredColorScheme: String
     @State private var isDateFilterPresented = false
     @State private var isCreatingFolder = false
     @State private var isRenamingFolder = false
@@ -590,187 +631,30 @@ private struct MeetingLibraryView: View {
     @State private var folderPendingHardDeletion: LibraryFolder?
     @FocusState private var focusedNavigationColumn: NavigationColumn?
 
-    var body: some View {
-        HSplitView {
-            sidebar
-                .frame(
-                    minWidth: 420,
-                    idealWidth: 470,
-                    maxWidth: 540,
-                    maxHeight: .infinity,
-                    alignment: .topLeading
-                )
-
+    private var libraryHalf1: some View {
+        NavigationSplitView {
+            sidebarColumn
+                .navigationSplitViewColumnWidth(min: 190, ideal: 212, max: 256)
+        } content: {
+            meetingListColumn
+                .navigationSplitViewColumnWidth(min: 272, ideal: 330, max: 430)
+        } detail: {
             detail
-                .frame(minWidth: 620, maxHeight: .infinity)
+                .frame(minWidth: 520, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .navigationTitle("会议库")
+        .searchable(
+            text: $store.searchText,
+            placement: .sidebar,
+            prompt: "搜索标题、内容、标签、备注或说话人"
+        )
+        .toolbar { libraryToolbar }
         .onAppear {
             store.reload()
             if focusedNavigationColumn == nil {
                 focusedNavigationColumn = .folders
             }
         }
-    }
-
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 12) {
-                TextField("搜索标题、内容、标签、备注或说话人", text: $store.searchText)
-                    .textFieldStyle(.roundedBorder)
-
-                HStack(spacing: 12) {
-                    HStack(spacing: 6) {
-                        Text("标签")
-                            .foregroundStyle(.secondary)
-                        Menu {
-                            Button("全部") {
-                                store.selectedLabels.removeAll()
-                            }
-                            Divider()
-                            ForEach(store.availableLabels, id: \.self) { label in
-                                Toggle(
-                                    label,
-                                    isOn: Binding(
-                                        get: { store.selectedLabels.contains(label) },
-                                        set: { enabled in
-                                            if enabled {
-                                                store.selectedLabels.insert(label)
-                                            } else {
-                                                store.selectedLabels.remove(label)
-                                            }
-                                        }
-                                    )
-                                )
-                            }
-                        } label: {
-                            Text(store.selectedLabels.isEmpty ? "全部" : store.selectedLabels.sorted().joined(separator: " / "))
-                                .lineLimit(1)
-                        }
-                    }
-
-                    HStack(spacing: 6) {
-                        Text("时间")
-                            .foregroundStyle(.secondary)
-                        Button(store.dateFilterDisplayName) {
-                            isDateFilterPresented.toggle()
-                        }
-                        .popover(isPresented: $isDateFilterPresented, arrowEdge: .top) {
-                            MeetingDateFilterPopover(store: store)
-                        }
-                    }
-                }
-
-                Divider()
-            }
-            .fixedSize(horizontal: false, vertical: true)
-
-            HStack(alignment: .top, spacing: 10) {
-                ScrollView {
-                    folderSection
-                }
-                .frame(width: 150)
-                .focusable()
-                .focused($focusedNavigationColumn, equals: .folders)
-                .focusEffectDisabled()
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(
-                            focusedNavigationColumn == .folders
-                                ? Color(nsColor: .separatorColor)
-                                : .clear,
-                            lineWidth: 1
-                        )
-                }
-                .onMoveCommand { direction in
-                    handleMoveCommand(direction, in: .folders)
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("会议纪要")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        if store.selectedFolderID == store.trashFolder.id,
-                           store.meetingCount(in: store.trashFolder) > 0 {
-                            Button("清空") {
-                                isEmptyingTrash = true
-                            }
-                            .buttonStyle(.borderless)
-                            .help("永久删除回收站中的全部会议")
-                        }
-                        Text("\(store.filteredMeetings.count)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ScrollView {
-                        LazyVStack(spacing: 4) {
-                            ForEach(store.filteredMeetings) { meeting in
-                                MeetingListRow(
-                                    meeting: meeting,
-                                    labels: store.labels(for: meeting),
-                                    displayDate: store.displayMeetingDate(for: meeting),
-                                    isSelected: store.selectedMeetingIDs.contains(meeting.id)
-                                )
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    focusedNavigationColumn = .meetings
-                                    store.selectMeeting(
-                                        meeting,
-                                        modifiers: NSApp.currentEvent?.modifierFlags ?? []
-                                    )
-                                }
-                                .contextMenu {
-                                    meetingContextMenu(for: meeting)
-                                }
-                                .onDrag {
-                                    draggedMeetingProvider(for: meeting)
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 240, maxHeight: .infinity, alignment: .top)
-                    .focusable()
-                    .focused($focusedNavigationColumn, equals: .meetings)
-                    .focusEffectDisabled()
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(
-                                focusedNavigationColumn == .meetings
-                                    ? Color(nsColor: .separatorColor)
-                                    : .clear,
-                                lineWidth: 1
-                            )
-                    }
-                    .onMoveCommand { direction in
-                        handleMoveCommand(direction, in: .meetings)
-                    }
-
-                    Button {
-                        openNewMeetingWindow()
-                    } label: {
-                        Label("新增会议", systemImage: "plus")
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                            .padding(.vertical, 8)
-                            .frame(maxWidth: .infinity)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.accentColor.opacity(0.14))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .layoutPriority(1)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .windowBackgroundColor))
         .alert("新建文件夹", isPresented: $isCreatingFolder) {
             TextField("文件夹名称", text: $pendingFolderName)
             Button("取消", role: .cancel) {
@@ -828,6 +712,10 @@ private struct MeetingLibraryView: View {
         } message: {
             Text("所选会议的目录、录音、转录与纪要文件会立即从磁盘删除，无法恢复。")
         }
+    }
+
+    var body: some View {
+        libraryHalf1
         .alert("重命名标签", isPresented: Binding(
             get: { quickLabelBeingRenamed != nil },
             set: { isPresented in
@@ -933,6 +821,183 @@ private struct MeetingLibraryView: View {
             Text(
                 "文件夹“\(folder.name)”及其中 \(store.meetingCount(in: folder)) 场会议的目录、录音、转录与纪要文件将被永久删除，无法恢复。"
             )
+        }
+    }
+
+    private var sidebarColumn: some View {
+        folderSection
+            .focusable()
+            .focused($focusedNavigationColumn, equals: .folders)
+            .focusEffectDisabled()
+            .onMoveCommand { direction in
+                handleMoveCommand(direction, in: .folders)
+            }
+            .safeAreaInset(edge: .bottom) {
+                serviceStatusFooter
+            }
+    }
+
+    private var serviceStatusFooter: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(store.isCreatingLocalMeeting ? Color.statusProcessing : Color.statusDone)
+                .frame(width: 7, height: 7)
+            Text(store.isCreatingLocalMeeting ? "正在处理会议" : "服务就绪")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    private var meetingListColumn: some View {
+        VStack(spacing: 0) {
+            List {
+                ForEach(store.filteredMeetings) { meeting in
+                    MeetingListRow(
+                        meeting: meeting,
+                        labels: store.labels(for: meeting),
+                        displayDate: store.displayMeetingDate(for: meeting),
+                        isSelected: store.selectedMeetingIDs.contains(meeting.id)
+                    )
+                    .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        focusedNavigationColumn = .meetings
+                        store.selectMeeting(
+                            meeting,
+                            modifiers: NSApp.currentEvent?.modifierFlags ?? []
+                        )
+                    }
+                    .contextMenu {
+                        meetingContextMenu(for: meeting)
+                    }
+                    .onDrag {
+                        draggedMeetingProvider(for: meeting)
+                    }
+                }
+            }
+            .listStyle(.inset)
+            .scrollContentBackground(.hidden)
+            .focusable()
+            .focused($focusedNavigationColumn, equals: .meetings)
+            .focusEffectDisabled()
+            .onMoveCommand { direction in
+                handleMoveCommand(direction, in: .meetings)
+            }
+            .overlay {
+                if store.filteredMeetings.isEmpty {
+                    ContentUnavailableView(
+                        "没有会议",
+                        systemImage: "tray",
+                        description: Text("点击工具栏的“新增会议”从录音或转录稿创建。")
+                    )
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if store.isCreatingLocalMeeting {
+                localMeetingProgressFooter
+            }
+        }
+    }
+
+    private var localMeetingProgressFooter: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(
+                store.localMeetingCreationMessage.isEmpty
+                    ? "正在处理新增会议"
+                    : store.localMeetingCreationMessage
+            )
+            .font(.caption)
+            .lineLimit(1)
+            Spacer(minLength: 0)
+            Button(store.isCancellingLocalMeeting ? "正在中止" : "中止") {
+                store.cancelLocalMeetingCreation()
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.red)
+            .disabled(store.isCancellingLocalMeeting)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    @ToolbarContentBuilder
+    private var libraryToolbar: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                openNewMeetingWindow()
+            } label: {
+                Label("新增会议", systemImage: "plus")
+            }
+            .help("新增会议")
+        }
+        ToolbarItem {
+            Menu {
+                Button("全部标签") {
+                    store.selectedLabels.removeAll()
+                }
+                Divider()
+                ForEach(store.availableLabels, id: \.self) { label in
+                    Toggle(
+                        label,
+                        isOn: Binding(
+                            get: { store.selectedLabels.contains(label) },
+                            set: { enabled in
+                                if enabled {
+                                    store.selectedLabels.insert(label)
+                                } else {
+                                    store.selectedLabels.remove(label)
+                                }
+                            }
+                        )
+                    )
+                }
+            } label: {
+                Label("标签筛选", systemImage: "tag")
+            }
+            .help(store.selectedLabels.isEmpty ? "按标签筛选" : store.selectedLabels.sorted().joined(separator: " / "))
+        }
+        ToolbarItem {
+            Button {
+                isDateFilterPresented.toggle()
+            } label: {
+                Label(store.dateFilterDisplayName, systemImage: "calendar")
+            }
+            .popover(isPresented: $isDateFilterPresented, arrowEdge: .bottom) {
+                MeetingDateFilterPopover(store: store)
+            }
+            .help("按时间筛选")
+        }
+        ToolbarItem {
+            Button {
+                store.reload(forceScan: true)
+            } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+            }
+            .help("重新扫描 sessions")
+        }
+        ToolbarItem {
+            Button {
+                preferredColorScheme = cycledAppearanceMode(after: preferredColorScheme)
+            } label: {
+                Label("显示模式", systemImage: appearanceModeSymbol(preferredColorScheme))
+            }
+            .help("切换显示模式")
+        }
+        ToolbarItem {
+            Button {
+                openSettingsWindow()
+            } label: {
+                Label("设置", systemImage: "gearshape")
+            }
+            .help("设置")
         }
     }
 
@@ -1170,11 +1235,11 @@ private struct MeetingLibraryView: View {
                             .padding(.vertical, 5)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.accentColor.opacity(0.14))
+                                    .fill(Color.brandAccent.opacity(0.14))
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Color.accentColor.opacity(0.38))
+                                    .stroke(Color.brandAccent.opacity(0.38))
                             )
                         }
                         .buttonStyle(.plain)
@@ -1219,7 +1284,7 @@ private struct MeetingLibraryView: View {
                                     RoundedRectangle(cornerRadius: 6)
                                         .fill(
                                             isSelected
-                                                ? Color.accentColor.opacity(0.18)
+                                                ? Color.brandAccent.opacity(0.18)
                                                 : Color(nsColor: .controlBackgroundColor)
                                         )
                                 )
@@ -1227,7 +1292,7 @@ private struct MeetingLibraryView: View {
                                     RoundedRectangle(cornerRadius: 6)
                                         .stroke(
                                             isSelected
-                                                ? Color.accentColor.opacity(0.55)
+                                                ? Color.brandAccent.opacity(0.55)
                                                 : Color(nsColor: .separatorColor),
                                             lineWidth: 1
                                         )
@@ -1331,83 +1396,103 @@ private struct MeetingLibraryView: View {
     }
 
     private var folderSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("文件夹")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    pendingFolderName = ""
-                    isCreatingFolder = true
-                } label: {
-                    Image(systemName: "folder.badge.plus")
+        List {
+            Section {
+                folderRow {
+                    folderButton(title: "全部", count: store.meetings.filter {
+                        store.folder(for: $0)?.isTrash != true
+                    }.count, selected: store.selectedFolderID == nil, acceptsDrop: false) {
+                        store.selectFolder(nil)
+                        focusedNavigationColumn = .folders
+                    }
                 }
-                .buttonStyle(.borderless)
-                .help("新建文件夹")
-            }
 
-            folderButton(title: "全部", count: store.meetings.filter {
-                store.folder(for: $0)?.isTrash != true
-            }.count, selected: store.selectedFolderID == nil, acceptsDrop: false) {
-                store.selectFolder(nil)
-                focusedNavigationColumn = .folders
-            }
-
-            ForEach(store.visibleFolders) { folder in
-                folderButton(
-                    title: folder.name,
-                    count: store.meetingCount(in: folder),
-                    selected: store.selectedFolderID == folder.id
-                        || store.selectedFolderIDs.contains(folder.id),
-                    highlighted: store.highlightedFolderID == folder.id,
-                    dropTarget: folder
-                ) {
-                    store.selectFolder(
-                        folder,
-                        modifiers: NSApp.currentEvent?.modifierFlags ?? []
-                    )
-                    focusedNavigationColumn = .folders
+                ForEach(store.visibleFolders) { folder in
+                    folderRow {
+                        folderButton(
+                            title: folder.name,
+                            count: store.meetingCount(in: folder),
+                            selected: store.selectedFolderID == folder.id
+                                || store.selectedFolderIDs.contains(folder.id),
+                            highlighted: store.highlightedFolderID == folder.id,
+                            dropTarget: folder
+                        ) {
+                            store.selectFolder(
+                                folder,
+                                modifiers: NSApp.currentEvent?.modifierFlags ?? []
+                            )
+                            focusedNavigationColumn = .folders
+                        }
+                        .contextMenu {
+                            folderContextMenu(for: folder)
+                        }
+                    }
                 }
-                .contextMenu {
-                    folderContextMenu(for: folder)
+
+                folderRow {
+                    folderButton(
+                        title: store.uncategorizedFolder.name,
+                        count: store.meetingCount(in: store.uncategorizedFolder),
+                        selected: store.selectedFolderID == store.uncategorizedFolder.id,
+                        highlighted: store.highlightedFolderID == store.uncategorizedFolder.id,
+                        dropTarget: nil
+                    ) {
+                        store.selectFolder(store.uncategorizedFolder)
+                        focusedNavigationColumn = .folders
+                    }
                 }
-            }
 
-            folderButton(
-                title: store.uncategorizedFolder.name,
-                count: store.meetingCount(in: store.uncategorizedFolder),
-                selected: store.selectedFolderID == store.uncategorizedFolder.id,
-                highlighted: store.highlightedFolderID == store.uncategorizedFolder.id,
-                dropTarget: nil
-            ) {
-                store.selectFolder(store.uncategorizedFolder)
-                focusedNavigationColumn = .folders
-            }
-
-            folderButton(
-                title: store.trashFolder.name,
-                count: store.meetingCount(in: store.trashFolder),
-                selected: store.selectedFolderID == store.trashFolder.id,
-                highlighted: store.highlightedFolderID == store.trashFolder.id,
-                dropTarget: store.trashFolder
-            ) {
-                store.selectFolder(store.trashFolder)
-                focusedNavigationColumn = .folders
-            }
-            .contextMenu {
-                Button("清空回收站", role: .destructive) {
-                    isEmptyingTrash = true
+                folderRow {
+                    folderButton(
+                        title: store.trashFolder.name,
+                        count: store.meetingCount(in: store.trashFolder),
+                        selected: store.selectedFolderID == store.trashFolder.id,
+                        highlighted: store.highlightedFolderID == store.trashFolder.id,
+                        dropTarget: store.trashFolder
+                    ) {
+                        store.selectFolder(store.trashFolder)
+                        focusedNavigationColumn = .folders
+                    }
+                    .contextMenu {
+                        Button("清空回收站", role: .destructive) {
+                            isEmptyingTrash = true
+                        }
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("文件夹")
+                    Spacer()
+                    Button {
+                        pendingFolderName = ""
+                        isCreatingFolder = true
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("新建文件夹")
                 }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 240, alignment: .topLeading)
-        .contentShape(Rectangle())
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
         .contextMenu {
             Button("新建文件夹") {
                 pendingFolderName = ""
                 isCreatingFolder = true
             }
         }
+    }
+
+    // 把自定义 folderButton 包成统一外观的 List 行：去掉系统分隔线和行背景，
+    // 让 folderButton 自身的青绿选中态生效，同时拿到 .sidebar 列表的材质。
+    private func folderRow<Content: View>(
+        @ViewBuilder _ content: () -> Content
+    ) -> some View {
+        content()
+            .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
     }
 
     private func folderButton(
@@ -1432,7 +1517,7 @@ private struct MeetingLibraryView: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(selected ? Color.accentColor.opacity(0.12) : .clear)
+                    .fill(selected ? Color.brandAccent.opacity(0.12) : .clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
@@ -2254,7 +2339,7 @@ struct TranscriptEditorWindowView: View {
                                         RoundedRectangle(cornerRadius: 6)
                                             .stroke(
                                                 activeSegmentID == segment.id
-                                                    ? Color.accentColor
+                                                    ? Color.brandAccent
                                                     : Color(nsColor: .separatorColor),
                                                 lineWidth: activeSegmentID == segment.id ? 1.5 : 1
                                             )
@@ -2263,7 +2348,7 @@ struct TranscriptEditorWindowView: View {
                             .padding(10)
                             .background(
                                 activeSegmentID == segment.id
-                                    ? Color.accentColor.opacity(0.08)
+                                    ? Color.brandAccent.opacity(0.08)
                                     : Color(nsColor: .controlBackgroundColor)
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -2491,26 +2576,82 @@ private struct MeetingListRow: View {
     let displayDate: String
     let isSelected: Bool
 
+    private var speakerCount: Int {
+        meeting.detectedSpeakers
+            .filter { $0.uppercased() != "TEXT" && $0.uppercased() != "UNKNOWN" }
+            .count
+    }
+
+    private var typeShortName: String {
+        MeetingTypeStyle.shortName(for: meeting.meetingType)
+    }
+
+    private var hasGeneratedOutput: Bool {
+        meeting.latestPDFURL != nil
+            || meeting.latestDOCXURL != nil
+            || meeting.latestHTMLURL != nil
+            || meeting.latestMDURL != nil
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(meeting.title)
-                .lineLimit(2)
-            HStack(spacing: 8) {
-                Text(displayDate)
+        HStack(spacing: Spacing.sm) {
+            RoundedRectangle(cornerRadius: CornerRadius.small)
+                .fill(Color.brandAccentSoft)
+                .frame(width: 34, height: 34)
+                .overlay {
+                    Image(systemName: MeetingTypeStyle.symbol(for: meeting.meetingType))
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Color.brandAccent)
+                }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(meeting.title)
+                    .lineLimit(1)
+
+                HStack(spacing: 6) {
+                    Text(displayDate)
+                    if speakerCount > 0 {
+                        Text("·")
+                        Text("\(speakerCount) 人")
+                    }
+                    if !typeShortName.isEmpty {
+                        Text("·")
+                        Text(typeShortName)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
                 if !labels.isEmpty {
-                    Text(labels.joined(separator: " / "))
+                    Text(labels.joined(separator: " · "))
+                        .font(.caption2)
+                        .foregroundStyle(Color.brandAccent)
+                        .lineLimit(1)
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+
+            Spacer(minLength: 6)
+
+            Circle()
+                .fill(hasGeneratedOutput ? Color.statusDone : Color(nsColor: .tertiaryLabelColor))
+                .frame(width: 7, height: 7)
+                .help(hasGeneratedOutput ? "已生成纪要" : "尚未生成纪要")
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
+        .padding(.horizontal, Spacing.sm)
+        .padding(.vertical, Spacing.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? Color.accentColor.opacity(0.12) : .clear)
+            RoundedRectangle(cornerRadius: CornerRadius.medium)
+                .fill(isSelected ? Color.brandAccentSoft : .clear)
         )
+        .overlay(alignment: .leading) {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color.brandAccent)
+                    .frame(width: 3, height: 22)
+            }
+        }
     }
 }
 
@@ -2654,7 +2795,7 @@ private struct MeetingDateFilterPopover: View {
     private func background(for date: Date) -> some View {
         if isSelected(date) {
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color.accentColor)
+                .fill(Color.brandAccent)
         } else {
             Color.clear
         }
@@ -2868,7 +3009,7 @@ struct FlexibleChipRow<Content: View>: View {
                         .lineLimit(1)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(Color.accentColor.opacity(0.10))
+                        .background(Color.brandAccent.opacity(0.10))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }

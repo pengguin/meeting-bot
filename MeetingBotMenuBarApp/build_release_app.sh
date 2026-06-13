@@ -5,7 +5,7 @@ APP_NAME="会议纪要助手"
 EXECUTABLE_NAME="FeishuMeetingBot"
 BUNDLE_ID="com.pgui.FeishuMeetingBotMenuBar"
 APP_VERSION="0.3.0"
-BUILD_NUMBER="18"
+BUILD_NUMBER="21"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -61,6 +61,7 @@ xcrun swiftc \
     -parse-as-library \
     -module-cache-path "$MODULE_CACHE_DIR" \
     "$SOURCE_DIR/AppPaths.swift" \
+    "$SOURCE_DIR/DesignSystem.swift" \
     "$SOURCE_DIR/Models.swift" \
     "$SOURCE_DIR/EnvironmentHealth.swift" \
     "$SOURCE_DIR/LaunchAgentManager.swift" \
