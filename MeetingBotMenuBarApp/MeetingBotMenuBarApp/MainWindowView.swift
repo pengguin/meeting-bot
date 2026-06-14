@@ -12,7 +12,7 @@ struct MainWindowView: View {
     let openSettingsWindow: () -> Void
     @State private var selectedTab: MainWindowTabKind = .library
     @AppStorage("preferredMainColorScheme") private var preferredMainColorScheme = "system"
-    @AppStorage("showOverviewTab") private var showOverviewTab = false
+    @AppStorage("showOverviewTab") private var showOverviewTab = true
     @AppStorage("mainTabOrder") private var mainTabOrderRaw = "library,overview"
 
     private var visibleTabs: [MainWindowTabKind] {
@@ -22,9 +22,10 @@ struct MainWindowView: View {
 
     var body: some View {
         Group {
-            if showOverviewTab {
-                legacyTabbedBody
-            } else {
+            switch selectedTab {
+            case .overview:
+                overviewContainer
+            case .library:
                 libraryView
             }
         }
@@ -54,80 +55,35 @@ struct MainWindowView: View {
             openTranscriptWindow: openTranscriptWindow,
             openNewMeetingWindow: openNewMeetingWindow,
             openSettingsWindow: openSettingsWindow,
-            preferredColorScheme: $preferredMainColorScheme
+            preferredColorScheme: $preferredMainColorScheme,
+            selectedTab: $selectedTab,
+            showsOverviewSwitch: showOverviewTab
         )
     }
 
-    private var legacyTabbedBody: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                ForEach(visibleTabs) { tab in
-                    Button {
-                        selectedTab = tab
-                    } label: {
-                        Label(tab.title, systemImage: tab.systemImage)
-                            .font(.headline)
-                            .foregroundStyle(selectedTab == tab ? .primary : .secondary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .frame(minWidth: 120, minHeight: 38)
-                            .contentShape(Rectangle())
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(
-                                        selectedTab == tab
-                                            ? Color.brandAccent.opacity(0.14)
-                                            : Color.clear
-                                    )
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Spacer()
-
-                Button {
-                    preferredMainColorScheme = nextAppearanceMode(after: preferredMainColorScheme)
-                } label: {
-                    Label(appearanceTitle, systemImage: appearanceSystemImage)
-                        .font(.headline)
-                }
-                .buttonStyle(.bordered)
-                .help("切换显示模式")
-
-                Button {
-                    openSettingsWindow()
-                } label: {
-                    Label("设置", systemImage: "gearshape")
-                        .font(.headline)
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            Group {
-                switch selectedTab {
-                case .overview:
-                    MainOverviewView(
-                        store: runtimeStore,
-                        libraryStore: libraryStore,
-                        selectedTab: $selectedTab
-                    )
-                case .library:
-                    libraryView
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Divider()
-
-            mainStatusBar
+    private var overviewContainer: some View {
+        NavigationStack {
+            MainOverviewView(
+                store: runtimeStore,
+                libraryStore: libraryStore,
+                selectedTab: $selectedTab
+            )
         }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                sectionPicker
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sectionPicker: some View {
+        Picker("", selection: $selectedTab) {
+            Text("概览").tag(MainWindowTabKind.overview)
+            Text("会议库").tag(MainWindowTabKind.library)
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 190)
     }
 
     private func normalizeSelection() {
@@ -136,87 +92,8 @@ struct MainWindowView: View {
         }
     }
 
-    @ViewBuilder
-    private var mainStatusBar: some View {
-        HStack(spacing: 10) {
-            switch selectedTab {
-            case .overview:
-                Text("版本 \(AppVersion.current)")
-            case .library:
-                Button {
-                    libraryStore.reload(forceScan: true)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .help("重新扫描 sessions")
-
-                Text("\(libraryStore.filteredMeetings.count) / \(libraryStore.meetings.count) 场会议")
-            }
-
-            Spacer(minLength: 0)
-
-            if libraryStore.isCreatingLocalMeeting {
-                ProgressView()
-                    .controlSize(.small)
-                Text(
-                    libraryStore.localMeetingCreationMessage.isEmpty
-                        ? "正在处理新增会议"
-                        : libraryStore.localMeetingCreationMessage
-                )
-                .lineLimit(1)
-
-                Button(libraryStore.isCancellingLocalMeeting ? "正在中止" : "中止") {
-                    libraryStore.cancelLocalMeetingCreation()
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.red)
-                .disabled(libraryStore.isCancellingLocalMeeting)
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-
     private var resolvedColorScheme: ColorScheme? {
         AppAppearance.resolvedColorScheme(for: preferredMainColorScheme)
-    }
-
-    private var appearanceTitle: String {
-        switch preferredMainColorScheme {
-        case "light":
-            return "白天"
-        case "dark":
-            return "夜览"
-        default:
-            return "自动"
-        }
-    }
-
-    private var appearanceSystemImage: String {
-        switch preferredMainColorScheme {
-        case "light":
-            return "sun.max"
-        case "dark":
-            return "moon"
-        default:
-            return "circle.lefthalf.filled"
-        }
-    }
-
-    private func nextAppearanceMode(after current: String) -> String {
-        switch current {
-        case "system":
-            return "light"
-        case "light":
-            return "dark"
-        default:
-            return "system"
-        }
     }
 }
 
@@ -612,6 +489,8 @@ private struct MeetingLibraryView: View {
     let openNewMeetingWindow: () -> Void
     let openSettingsWindow: () -> Void
     @Binding var preferredColorScheme: String
+    @Binding var selectedTab: MainWindowTabKind
+    let showsOverviewSwitch: Bool
     @State private var isDateFilterPresented = false
     @State private var isCreatingFolder = false
     @State private var isRenamingFolder = false
@@ -930,15 +809,24 @@ private struct MeetingLibraryView: View {
 
     @ToolbarContentBuilder
     private var libraryToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarItem(placement: .principal) {
+            if showsOverviewSwitch {
+                Picker("", selection: $selectedTab) {
+                    Text("概览").tag(MainWindowTabKind.overview)
+                    Text("会议库").tag(MainWindowTabKind.library)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 190)
+            }
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
             Button {
                 openNewMeetingWindow()
             } label: {
                 Label("新增会议", systemImage: "plus")
             }
             .help("新增会议")
-        }
-        ToolbarItem {
+
             Menu {
                 Button("全部标签") {
                     store.selectedLabels.removeAll()
@@ -960,38 +848,34 @@ private struct MeetingLibraryView: View {
                     )
                 }
             } label: {
-                Label("标签筛选", systemImage: "tag")
+                Label("标签筛选", systemImage: store.selectedLabels.isEmpty ? "tag" : "tag.fill")
             }
             .help(store.selectedLabels.isEmpty ? "按标签筛选" : store.selectedLabels.sorted().joined(separator: " / "))
-        }
-        ToolbarItem {
+
             Button {
                 isDateFilterPresented.toggle()
             } label: {
-                Label(store.dateFilterDisplayName, systemImage: "calendar")
+                Label("时间筛选", systemImage: "calendar")
             }
             .popover(isPresented: $isDateFilterPresented, arrowEdge: .bottom) {
                 MeetingDateFilterPopover(store: store)
             }
-            .help("按时间筛选")
-        }
-        ToolbarItem {
+            .help(store.dateFilterDisplayName == "全部时间" ? "按时间筛选" : store.dateFilterDisplayName)
+
             Button {
                 store.reload(forceScan: true)
             } label: {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
             .help("重新扫描 sessions")
-        }
-        ToolbarItem {
+
             Button {
                 preferredColorScheme = cycledAppearanceMode(after: preferredColorScheme)
             } label: {
                 Label("显示模式", systemImage: appearanceModeSymbol(preferredColorScheme))
             }
             .help("切换显示模式")
-        }
-        ToolbarItem {
+
             Button {
                 openSettingsWindow()
             } label: {
@@ -2310,48 +2194,12 @@ struct TranscriptEditorWindowView: View {
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         ForEach($segments) { $segment in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text("\(timestamp(segment.start)) - \(timestamp(segment.end))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Picker("说话人", selection: $segment.speaker) {
-                                        ForEach(speakerChoices(for: segment), id: \.self) { speakerID in
-                                            Text(
-                                                store.displaySpeakerLabel(
-                                                    for: meeting,
-                                                    speakerID: speakerID
-                                                )
-                                            )
-                                            .tag(speakerID)
-                                        }
-                                    }
-                                    .labelsHidden()
-                                    .frame(width: 170)
-                                }
-
-                                TextEditor(text: $segment.text)
-                                    .font(.body)
-                                    .frame(minHeight: 54)
-                                    .padding(4)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .stroke(
-                                                activeSegmentID == segment.id
-                                                    ? Color.brandAccent
-                                                    : Color(nsColor: .separatorColor),
-                                                lineWidth: activeSegmentID == segment.id ? 1.5 : 1
-                                            )
-                                    )
-                            }
-                            .padding(10)
-                            .background(
-                                activeSegmentID == segment.id
-                                    ? Color.brandAccent.opacity(0.08)
-                                    : Color(nsColor: .controlBackgroundColor)
+                            TranscriptSegmentRow(
+                                store: store,
+                                meeting: meeting,
+                                segment: $segment,
+                                isActive: activeSegmentID == segment.id
                             )
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
                             .id(segment.id)
                         }
                     }
@@ -2389,7 +2237,55 @@ struct TranscriptEditorWindowView: View {
         }
     }
 
-    private func speakerChoices(for segment: TranscriptSegment) -> [String] {
+}
+
+// 独立的转录段行：把 isActive 作为输入参数，使播放/seek 时 currentTime 变化
+// 只重绘高亮状态真正改变的行，避免整列 TextEditor 重绘导致的卡顿。
+private struct TranscriptSegmentRow: View {
+    @ObservedObject var store: MeetingLibraryStore
+    let meeting: MeetingRecord
+    @Binding var segment: TranscriptSegment
+    let isActive: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("\(timestamp(segment.start)) - \(timestamp(segment.end))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("说话人", selection: $segment.speaker) {
+                    ForEach(speakerChoices, id: \.self) { speakerID in
+                        Text(store.displaySpeakerLabel(for: meeting, speakerID: speakerID))
+                            .tag(speakerID)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 170)
+            }
+
+            TextEditor(text: $segment.text)
+                .font(.body)
+                .frame(minHeight: 54)
+                .padding(4)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(
+                            isActive ? Color.brandAccent : Color(nsColor: .separatorColor),
+                            lineWidth: isActive ? 1.5 : 1
+                        )
+                )
+        }
+        .padding(10)
+        .background(
+            isActive
+                ? Color.brandAccent.opacity(0.08)
+                : Color(nsColor: .controlBackgroundColor)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var speakerChoices: [String] {
         var choices = meeting.detectedSpeakers
         if !choices.contains(segment.speaker) {
             choices.append(segment.speaker)
@@ -2487,7 +2383,7 @@ final class TranscriptAudioPlayerModel: ObservableObject {
         let player = AVPlayer(url: url)
         self.player = player
         observer = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { [weak self, weak player] time in
             guard let self, let player else {

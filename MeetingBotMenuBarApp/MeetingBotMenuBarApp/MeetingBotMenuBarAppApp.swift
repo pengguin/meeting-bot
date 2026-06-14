@@ -148,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 configStore: configStore,
                 templateStore: templateStore
             )
+            .tint(.brandAccent)
         )
         self.settingsWindow = window
     }
@@ -585,6 +586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 store: libraryStore,
                 meeting: meeting
             )
+            .tint(.brandAccent)
         )
         transcriptWindows[meeting.sessionID] = window
 
@@ -619,6 +621,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self?.completeNewMeeting(result: result, openAfterCreation: openAfterCreation)
                 }
             )
+            .tint(.brandAccent)
         )
         newMeetingWindow = window
 
