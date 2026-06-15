@@ -868,11 +868,6 @@ struct SettingsWindowView: View {
     private var appearanceTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                settingsCard("主界面") {
-                    Toggle("显示“概览”标签页", isOn: $showOverviewTab)
-                        .toggleStyle(.checkbox)
-                }
-
                 settingsCard("标签页顺序") {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(Array(tabOrder.enumerated()), id: \.element) { index, tab in
