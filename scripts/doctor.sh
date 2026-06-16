@@ -42,6 +42,42 @@ check_codex_cli() {
   fi
 }
 
+check_llm_backend() {
+  local provider api_key model
+  provider="$(read_env_value LLM_PROVIDER || true)"
+  provider="${provider:-codex}"
+  provider="$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')"
+
+  case "$provider" in
+    codex)
+      check_codex_cli "$(read_env_value CODEX_BIN)"
+      ;;
+    openai)
+      api_key="$(read_env_value LLM_API_KEY || true)"
+      model="$(read_env_value LLM_MODEL || true)"
+      [[ -n "$api_key" ]] || fail "LLM 后端 openai 缺少 LLM_API_KEY"
+      [[ -n "$model" ]] || fail "LLM 后端 openai 缺少 LLM_MODEL"
+      if [[ -n "$api_key" && -n "$model" ]]; then
+        pass "LLM 后端配置：openai / $model"
+      fi
+      ;;
+    anthropic)
+      api_key="$(read_env_value LLM_API_KEY || true)"
+      if [[ -n "$api_key" ]]; then
+        pass "LLM 后端配置：anthropic"
+      else
+        fail "LLM 后端 anthropic 缺少 LLM_API_KEY"
+      fi
+      ;;
+    lm-studio|ollama)
+      pass "LLM 后端配置：$provider（本地服务运行时检查模型）"
+      ;;
+    *)
+      fail "不支持的 LLM_PROVIDER：$provider"
+      ;;
+  esac
+}
+
 resolve_tool_path() {
   local command_name="$1"
   local configured_path="${2:-}"
@@ -80,7 +116,8 @@ resolve_tool_path() {
 
 read_env_value() {
   local key="$1"
-  grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-
+  [[ -f "$ENV_FILE" ]] || return 0
+  grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
 check_env() {
@@ -144,7 +181,7 @@ main() {
   printf '\n'
   check_paths
   check_command ffmpeg "ffmpeg 可用" "$(read_env_value FFMPEG_BIN)"
-  check_codex_cli "$(read_env_value CODEX_BIN)"
+  check_llm_backend
   check_libo
   check_env
 

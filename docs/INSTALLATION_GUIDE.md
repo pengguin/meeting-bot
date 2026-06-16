@@ -1,4 +1,4 @@
-# 会议纪要助手 0.2.14 安装文档
+# 会议纪要助手 0.3.0 安装文档
 
 ## 配套文档
 
@@ -19,7 +19,7 @@
 
 - 飞书开放平台企业自建应用。
 - Hugging Face Token。
-- Codex CLI，并在本机完成登录。
+- 纪要生成 LLM 后端：默认 Codex CLI，也可使用 OpenAI 兼容 API、Anthropic、LM Studio 或 Ollama。
 - `ffmpeg`。
 - LibreOffice。
 
@@ -29,7 +29,7 @@
 brew install ffmpeg libreoffice
 ```
 
-Codex CLI 安装和登录请按当前 OpenAI/Codex CLI 指引完成。安装后确认终端中可运行：
+如果使用默认 `codex` 后端，Codex CLI 安装和登录请按当前 OpenAI/Codex CLI 指引完成。安装后确认终端中可运行：
 
 ```bash
 codex --version
@@ -56,7 +56,7 @@ codex --version
 
 ### 推荐方式：二合一图形化安装盘
 
-默认分发物为 `会议纪要助手 0.2.14 安装盘.dmg`。其中包含：
+默认分发物为 `会议纪要助手 0.3.0 安装盘.dmg`。其中包含：
 
 - `会议纪要助手.app`
 - `Applications` 快捷入口
@@ -66,7 +66,7 @@ codex --version
 
 使用方式：
 
-1. 双击打开 `会议纪要助手 0.2.14 安装盘.dmg`。
+1. 双击打开 `会议纪要助手 0.3.0 安装盘.dmg`。
 2. 将 `会议纪要助手.app` 拖入 `Applications`。
 3. 在“应用程序”中首次打开 App。
 4. App 会自动判断当前用户目录中是否已有安装：
@@ -85,14 +85,14 @@ codex --version
 
 说明：
 
-- 安装器不会替你填写密钥，也不会替你登录 Codex CLI。
+- 安装器不会替你填写密钥，也不会替你登录外部 LLM 服务；使用默认 Codex 后端时，仍需本人完成 Codex CLI 登录。
 - 如果机器上只检测到低版本 Python，首次启动安装窗口会直接提供三种路径：
   - 自动在线安装独立 Python 3.12 运行时，并在项目中创建专用虚拟环境；不会替换系统 Python。
   - 选择本地离线 Python 安装包。
   - 指定已经安装好的 Python，可直接选择现有虚拟环境中的 `bin/python`。
-- 如果缺少 `ffmpeg`、LibreOffice 或 Codex CLI，首次启动安装窗口会提供“自动安装缺失工具”：
+- 如果缺少 `ffmpeg`、LibreOffice 或默认后端所需的 Codex CLI，首次启动安装窗口会提供“自动安装缺失工具”：
   - `ffmpeg` 和 LibreOffice 通过 Homebrew 安装。
-  - Codex CLI 会自动安装，但登录仍需本人完成。
+  - Codex CLI 可自动安装，但登录仍需本人完成；若改用其他 LLM 后端，则按对应服务填写 API 地址、Key 和模型。
   - 若机器尚无 Homebrew，系统可能要求再完成一次确认。
 - 首次启动安装仍需要网络下载 Python 依赖；若本机没有 Python 3.12+，可由 App 自动在线准备独立运行时。
 - 当前安装包未做 Developer ID 签名和公证；首次在其他电脑上打开时，macOS 可能会给出安全提示。
@@ -135,7 +135,7 @@ bash scripts/build_wheelhouse.sh
 - 可用磁盘空间是否至少 8GB
 - 是否存在 Python 3.12 或更高版本
 
-内存低于 16GB、磁盘空间低于 12GB，以及缺少 `ffmpeg`、LibreOffice、Codex CLI 时，会给出警告；硬性条件不满足时，安装会直接停止。
+内存低于 16GB、磁盘空间低于 12GB，以及缺少 `ffmpeg`、LibreOffice 或当前选择的纪要生成后端配置时，会给出警告；硬性条件不满足时，安装会直接停止。
 
 ### 备用方式：命令行安装
 
@@ -166,7 +166,7 @@ bash scripts/install.sh --dependency-mode offline
 - 写入 LaunchAgent：`$HOME/Library/LaunchAgents/com.pgui.feishu-meeting-bot.plist`。
 - 在 `.env` 已填完整时启用并加载后台服务；若仍是占位配置，则只完成安装，不直接启动。
 
-安装脚本不会替你填写飞书 App ID、App Secret、Hugging Face Token，也不会替你登录 Codex CLI。
+安装脚本不会替你填写飞书 App ID、App Secret、Hugging Face Token 或 LLM API Key，也不会替你登录 Codex CLI。
 
 安装完成后建议先运行：
 
@@ -174,20 +174,20 @@ bash scripts/install.sh --dependency-mode offline
 bash "$HOME/Library/Application Support/meeting-bot/scripts/doctor.sh"
 ```
 
-自检会检查 Python 虚拟环境、`ffmpeg`、LibreOffice、Codex CLI、`.env` 和 LaunchAgent 配置。
+自检会检查 Python 虚拟环境、`ffmpeg`、LibreOffice、纪要生成后端、`.env` 和 LaunchAgent 配置。
 
 首次打开 App 时，还会自动进入“首次启动配置”向导。向导会依次完成：
 
 1. 系统条件和运行环境检查。
 2. 确认本地录音和会议纪要保存位置；默认分别为 `$HOME/Library/Application Support/meeting-bot/downloads` 和 `$HOME/Library/Application Support/meeting-bot/sessions`，也可在全新安装时直接定制。
 3. 飞书 App ID、App Secret、Hugging Face Token 等配置填写。
-4. 飞书接口、Hugging Face 模型访问和 Codex CLI 登录状态检查。
+4. 飞书接口、Hugging Face 模型访问和纪要生成后端连通性检查。
 
 如果希望先了解整体功能，再开始安装，可先打开 `docs/SOFTWARE_GUIDE.html`。
 
 ## 从旧版本升级
 
-如果已经安装并运行过旧版，仍然优先使用 `会议纪要助手 0.2.14 安装盘.dmg`。把新版 App 拖入 `Applications` 覆盖旧版后，再打开 App，程序会自动识别为升级路径；如果旧版仍在 `$HOME/Library/Application Support/meetin-bot`、`$HOME/Library/Application Support/feishu-meeting-bot`、`$HOME/meetin-bot`、`$HOME/meeting-bot` 或 `$HOME/feishu-meeting-bot`，会把 `.env`、虚拟环境和用户数据迁移到新的 `$HOME/Library/Application Support/meeting-bot`，并把旧根目录下的日志迁到 `$HOME/Library/Logs/meeting-bot`。
+如果已经安装并运行过旧版，仍然优先使用 `会议纪要助手 0.3.0 安装盘.dmg`。把新版 App 拖入 `Applications` 覆盖旧版后，再打开 App，程序会自动识别为升级路径；如果旧版仍在 `$HOME/Library/Application Support/meetin-bot`、`$HOME/Library/Application Support/feishu-meeting-bot`、`$HOME/meetin-bot`、`$HOME/meeting-bot` 或 `$HOME/feishu-meeting-bot`，会把 `.env`、虚拟环境和用户数据迁移到新的 `$HOME/Library/Application Support/meeting-bot`，并把旧根目录下的日志迁到 `$HOME/Library/Logs/meeting-bot`。
 
 它会在保留 `.env`、已有保存位置、历史会议、日志、`library/` 和本地模板的前提下更新程序文件、菜单栏 App 与 LaunchAgent。详细步骤见 `docs/UPGRADE_GUIDE.md`。
 
@@ -225,6 +225,19 @@ ASR_BEAM_SIZE=5
 ```bash
 CODEX_BIN=/opt/homebrew/bin/codex
 ```
+
+纪要生成默认使用 Codex CLI。若要切换到其他后端，可继续填写：
+
+```bash
+# 可选 codex / openai / anthropic / lm-studio / ollama
+LLM_PROVIDER=codex
+LLM_API_BASE=
+LLM_API_KEY=
+LLM_MODEL=
+LLM_TIMEOUT_SECONDS=600
+```
+
+`openai` 适用于 OpenAI、DeepSeek、Kimi、通义千问、智谱等兼容 Chat Completions 协议的服务；`lm-studio` 和 `ollama` 面向本机服务，模型名可留空并由服务端当前加载模型决定。
 
 ## 启动服务
 
@@ -264,7 +277,7 @@ bash scripts/build_setup_package.sh
 
 - 重新构建菜单栏 App。
 - 排除 `.git`、本地运行数据和密钥，并在完整安装时清理旧 App 资源残留。
-- 生成默认交付物 `dist/会议纪要助手 0.2.14 安装盘.dmg`。
+- 生成默认交付物 `dist/会议纪要助手 0.3.0 安装盘.dmg`。
 - 把安装与升级说明、使用说明和更新记录一并放入安装盘。
 - 同步在 `dist/` 下生成线程交接汇总。
 
@@ -314,7 +327,7 @@ bash "$HOME/Library/Application Support/meeting-bot/scripts/install.sh"
 bash "$HOME/Library/Application Support/meeting-bot/scripts/doctor.sh"
 ```
 
-若 `.env` 仍是占位配置，先填写后再启动服务。0.2.14 版本的 App 在点击“启动”或“重启”时，会先尝试恢复被禁用的 LaunchAgent，再执行加载和启动；如果旧版本曾经把服务禁用过，升级后也可以自行恢复。
+若 `.env` 仍是占位配置，先填写后再启动服务。0.3.0 版本的 App 在点击“启动”或“重启”时，会先尝试恢复被禁用的 LaunchAgent，再执行加载和启动；如果旧版本曾经把服务禁用过，升级后也可以自行恢复。
 
 ### PDF 未生成
 
@@ -328,9 +341,9 @@ bash "$HOME/Library/Application Support/meeting-bot/scripts/doctor.sh"
 
 确认 `HF_TOKEN` 正确，并且 Hugging Face 账号已接受 pyannote 模型条款。
 
-### Codex 执行失败
+### 纪要生成后端执行失败
 
-确认 Codex CLI 已登录，并确认 `.env` 中的 `CODEX_BIN` 指向可执行文件。
+使用默认 Codex 后端时，确认 Codex CLI 已登录，并确认 `.env` 中的 `CODEX_BIN` 指向可执行文件。使用其他后端时，确认 `LLM_PROVIDER`、`LLM_API_BASE`、`LLM_API_KEY` 和 `LLM_MODEL` 与对应服务匹配。
 
 ### 需要把软件分享给别人
 

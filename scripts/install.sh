@@ -133,6 +133,43 @@ check_codex_cli() {
   return 1
 }
 
+check_llm_backend() {
+  local provider api_key model
+  provider="$(read_env_value LLM_PROVIDER || true)"
+  provider="${provider:-codex}"
+  provider="$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')"
+
+  case "$provider" in
+    codex)
+      check_codex_cli "$(read_env_value CODEX_BIN)"
+      ;;
+    openai)
+      api_key="$(read_env_value LLM_API_KEY || true)"
+      model="$(read_env_value LLM_MODEL || true)"
+      [[ -n "$api_key" ]] || warn "LLM 后端 openai 缺少 LLM_API_KEY"
+      [[ -n "$model" ]] || warn "LLM 后端 openai 缺少 LLM_MODEL"
+      if [[ -n "$api_key" && -n "$model" ]]; then
+        info "LLM 后端配置：openai / $model"
+      fi
+      ;;
+    anthropic)
+      api_key="$(read_env_value LLM_API_KEY || true)"
+      if [[ -n "$api_key" ]]; then
+        info "LLM 后端配置：anthropic"
+      else
+        warn "LLM 后端 anthropic 缺少 LLM_API_KEY"
+      fi
+      ;;
+    lm-studio|ollama)
+      info "LLM 后端配置：$provider（本地服务运行时检查模型）"
+      ;;
+    *)
+      warn "不支持的 LLM_PROVIDER：$provider"
+      return 1
+      ;;
+  esac
+}
+
 read_env_value() {
   local key="$1"
   local env_file="$INSTALL_DIR/.env"
@@ -528,7 +565,7 @@ setup_env() {
 
   if [[ ! -f ".env" ]]; then
     cp .env.example .env
-    warn "已生成 $INSTALL_DIR/.env，请填写 FEISHU_APP_ID、FEISHU_APP_SECRET、HF_TOKEN，并确认 CODEX_BIN。"
+    warn "已生成 $INSTALL_DIR/.env，请填写 FEISHU_APP_ID、FEISHU_APP_SECRET、HF_TOKEN，并确认纪要生成后端配置。"
   else
     info ".env 已存在，保留现有配置"
   fi
@@ -687,7 +724,7 @@ print_checks() {
     bash "$SOURCE_ROOT/scripts/preflight.sh" || exit 1
   require_command ffmpeg "请安装 ffmpeg，例如：brew install ffmpeg。" "$(read_env_value FFMPEG_BIN)" || true
   require_command soffice "请安装 LibreOffice，用于 DOCX 转 PDF。" || true
-  check_codex_cli "$(read_env_value CODEX_BIN)" || true
+  check_llm_backend || true
 }
 
 main() {
@@ -715,7 +752,7 @@ main() {
 
   info "安装流程完成。下一步："
   info "1. 编辑 $INSTALL_DIR/.env，填写飞书和 Hugging Face 配置。"
-  info "2. 确认 Codex CLI 已登录。"
+  info "2. 确认纪要生成后端可用；默认 Codex 后端需完成 Codex CLI 登录。"
   info "3. 运行 bash $INSTALL_DIR/scripts/doctor.sh，确认环境通过。"
   info "4. 打开 ${APP_INSTALL_PATH}，或直接运行 ${INSTALL_DIR}/dist/${APP_NAME}.app。"
 }

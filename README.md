@@ -14,7 +14,7 @@
 - `scripts/`：安装、自检、本地新增会议、重生成和补导出文件脚本。
 - `schemas/`：会议分类和会议报告的结构化输出 schema。
 - `docs/`：安装、升级、使用说明和更新记录。
-- `tests/`：核心导出、会话复用和转录材料解析测试。
+- `tests/`：核心导出、会话复用、转录材料解析、转写进度、说话人显示和 LLM 后端测试。
 
 ## 隐私边界
 
@@ -66,8 +66,11 @@ LLM_MODEL=           # openai 兼容服务必填；本地服务可留空自动�
 
 ## 常用验证
 
+测试依赖放在 `requirements-dev.txt`。本地开发可使用项目虚拟环境；已安装版 App 的运行环境默认位于 `$HOME/Library/Application Support/meeting-bot/.venv`。
+
 ```bash
-python3 -m pytest tests
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest tests -q
 bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhouse.sh scripts/doctor.sh scripts/install_optional_tools.sh scripts/preflight.sh scripts/upgrade.sh start_bot.sh
 python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
 ```

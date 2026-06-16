@@ -4,7 +4,7 @@
 
 ## 默认只需提供
 
-- 安装盘：`dist/会议纪要助手 0.2.14 安装盘.dmg`
+- 安装盘：`dist/会议纪要助手 0.3.0 安装盘.dmg`
 
 该 `dmg` 内只包含：
 
@@ -19,7 +19,7 @@
 - 自己的 `FEISHU_APP_ID`
 - 自己的 `FEISHU_APP_SECRET`
 - 自己的 `HF_TOKEN`
-- 已登录的 Codex CLI
+- 纪要生成后端：默认可使用已登录的 Codex CLI，也可改用 OpenAI 兼容 API、Anthropic、LM Studio 或 Ollama
 - 本机可用的 `ffmpeg`
 - 本机可用的 LibreOffice
 
@@ -48,7 +48,7 @@
   3. 运行 `scripts/doctor.sh`
   4. 打开 App
 - 若对方会直接从本地材料建会，可补充说明“会议库 -> 新增会议”支持录音、现成转录稿、手动会议类型和额外导出格式。
-- 如果你只想发一个文件，提供 `dist/会议纪要助手 0.2.14 安装盘.dmg` 即可；把 App 拖入 `Applications` 后，它会自动区分首次安装和升级。
+- 如果你只想发一个文件，提供 `dist/会议纪要助手 0.3.0 安装盘.dmg` 即可；把 App 拖入 `Applications` 后，它会自动区分首次安装和升级。
 - 首次打开 App 后会自动部署后台组件；首次安装会进入配置向导，升级会直接进入新版界面。
 - 若分享给非开发用户：
   - 直接提供安装盘

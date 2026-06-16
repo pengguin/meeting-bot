@@ -36,8 +36,8 @@ fail() {
 
 read_env_value() {
   local key="$1"
-  [[ -f "$ENV_FILE" ]] || return
-  grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-
+  [[ -f "$ENV_FILE" ]] || return 0
+  grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
 resolve_tool_path() {
@@ -289,6 +289,42 @@ check_codex_cli() {
   fi
 }
 
+check_llm_backend() {
+  local provider api_key model
+  provider="$(read_env_value LLM_PROVIDER || true)"
+  provider="${provider:-codex}"
+  provider="$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')"
+
+  case "$provider" in
+    codex)
+      check_codex_cli "$(read_env_value CODEX_BIN)"
+      ;;
+    openai)
+      api_key="$(read_env_value LLM_API_KEY || true)"
+      model="$(read_env_value LLM_MODEL || true)"
+      [[ -n "$api_key" ]] || warn "LLM 后端 openai 缺少 LLM_API_KEY"
+      [[ -n "$model" ]] || warn "LLM 后端 openai 缺少 LLM_MODEL"
+      if [[ -n "$api_key" && -n "$model" ]]; then
+        pass "LLM 后端配置：openai / $model"
+      fi
+      ;;
+    anthropic)
+      api_key="$(read_env_value LLM_API_KEY || true)"
+      if [[ -n "$api_key" ]]; then
+        pass "LLM 后端配置：anthropic"
+      else
+        warn "LLM 后端 anthropic 缺少 LLM_API_KEY"
+      fi
+      ;;
+    lm-studio|ollama)
+      pass "LLM 后端配置：$provider（本地服务运行时检查模型）"
+      ;;
+    *)
+      warn "不支持的 LLM_PROVIDER：$provider"
+      ;;
+  esac
+}
+
 main() {
   printf '会议纪要助手 安装前检查\n\n'
   check_macos
@@ -298,7 +334,7 @@ main() {
   check_python
   check_optional_tool ffmpeg "ffmpeg" "$(read_env_value FFMPEG_BIN)"
   check_optional_tool soffice "LibreOffice" "" "/Applications/LibreOffice.app/Contents/MacOS/soffice"
-  check_codex_cli "$(read_env_value CODEX_BIN)"
+  check_llm_backend
 
   printf '\n'
   if (( FAILURES > 0 )); then

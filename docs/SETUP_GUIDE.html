@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>会议纪要助手 0.2.14 安装与升级说明</title>
+  <title>会议纪要助手 0.3.0 安装与升级说明</title>
   <style>
     :root {
       --text: #17202a;
@@ -83,10 +83,10 @@
 </head>
 <body>
   <main>
-    <h1>会议纪要助手 0.2.14 安装与升级说明</h1>
+    <h1>会议纪要助手 0.3.0 安装与升级说明</h1>
     <p class="lead">
       该文档合并了安装、依赖和升级说明。默认分发物为
-      <code>会议纪要助手 0.2.14 安装盘.dmg</code>，其中包含可拖拽安装的 App、<code>Applications</code> 快捷入口和说明文档文件夹。
+      <code>会议纪要助手 0.3.0 安装盘.dmg</code>，其中包含可拖拽安装的 App、<code>Applications</code> 快捷入口和说明文档文件夹。
     </p>
 
     <h2>安装前准备</h2>
@@ -106,7 +106,7 @@
         <ul>
           <li>飞书自建应用的 App ID 和 App Secret</li>
           <li>Hugging Face Token</li>
-          <li>已登录的 Codex CLI</li>
+          <li>纪要生成后端配置：默认 Codex CLI，也可使用 OpenAI 兼容 API、Anthropic、LM Studio 或 Ollama</li>
           <li><code>ffmpeg</code></li>
           <li>LibreOffice</li>
         </ul>
@@ -122,7 +122,7 @@
         <tr><td>Python 虚拟环境</td><td>后台服务运行</td><td>安装器会自动复用、离线安装或在线创建。</td></tr>
         <tr><td><code>ffmpeg</code></td><td>音频转换</td><td>把录音转换为后续分析所需格式。</td></tr>
         <tr><td>LibreOffice</td><td>导出 PDF</td><td>把生成的 DOCX 转成 PDF。</td></tr>
-        <tr><td>Codex CLI</td><td>会议分类和纪要生成</td><td>需要提前完成登录。</td></tr>
+        <tr><td>LLM 后端</td><td>会议分类和纪要生成</td><td>默认 Codex CLI；HTTP 或本地模型后端需填写地址、Key 和模型。</td></tr>
       </tbody>
     </table>
     <div class="note warn">
@@ -131,7 +131,7 @@
 
     <h2>推荐安装方式</h2>
     <ol>
-      <li>双击打开 <code>会议纪要助手 0.2.14 安装盘.dmg</code>。</li>
+      <li>双击打开 <code>会议纪要助手 0.3.0 安装盘.dmg</code>。</li>
       <li>窗口中左侧是 <code>会议纪要助手.app</code>，右侧是 <code>Applications</code> 文件夹，按中间箭头把 App 拖过去即可。</li>
       <li>在“应用程序”中首次打开 App。App 会自动判断当前用户目录中是否已有安装：
         <ul>
@@ -162,7 +162,7 @@
       <li>检查系统环境。</li>
       <li>确认本地录音和会议纪要保存位置；默认分别为 <code>downloads/</code> 和 <code>sessions/</code>，也可直接改成自定义目录。</li>
       <li>填写飞书 App ID、App Secret、Hugging Face Token 等配置。</li>
-      <li>检查飞书接口、Hugging Face 模型访问和 Codex CLI 登录状态。</li>
+      <li>检查飞书接口、Hugging Face 模型访问和纪要生成后端连通性。</li>
       <li>检查通过后即可启动后台服务。</li>
     </ol>
     <div class="note">
@@ -172,10 +172,21 @@
       <code>bin/python</code>。
     </div>
     <div class="note">
-      若缺少 <code>ffmpeg</code>、LibreOffice 或 Codex CLI，首次启动安装窗口也会提示可自动补齐。
+      若缺少 <code>ffmpeg</code>、LibreOffice 或默认后端所需的 Codex CLI，首次启动安装窗口也会提示可自动补齐。
       该流程会通过 Homebrew 安装缺失工具；若机器尚无 Homebrew，系统可能还会要求你完成一次额外确认。
-      Codex CLI 安装后仍需由本人完成登录。
+      Codex CLI 安装后仍需由本人完成登录；如果使用其他 LLM 后端，请在向导或 <code>.env</code> 中填写对应 API 配置。
     </div>
+
+    <h2>纪要生成后端</h2>
+    <pre><code>LLM_PROVIDER=codex
+LLM_API_BASE=
+LLM_API_KEY=
+LLM_MODEL=
+LLM_TIMEOUT_SECONDS=600</code></pre>
+    <p>
+      <code>codex</code> 为默认后端；<code>openai</code> 可接入 OpenAI、DeepSeek、Kimi、通义千问、智谱等兼容服务；
+      <code>anthropic</code> 使用 Anthropic API；<code>lm-studio</code> 和 <code>ollama</code> 用于本机模型服务。
+    </p>
 
     <h2>推荐转写性能配置</h2>
     <pre><code>ASR_MODEL=medium
@@ -213,7 +224,7 @@ bash scripts/upgrade.sh</code></pre>
     <ul>
       <li>首次安装后，如需排查环境，可运行 <code>scripts/doctor.sh</code>。</li>
       <li>后台服务配置位于 <code>$HOME/Library/LaunchAgents/com.pgui.feishu-meeting-bot.plist</code>。</li>
-      <li>若 <code>codex</code> 或 <code>ffmpeg</code> 不在默认 PATH 中，可在配置中填写绝对路径。</li>
+      <li>若 <code>codex</code> 或 <code>ffmpeg</code> 不在默认 PATH 中，可在配置中填写绝对路径；使用其他 LLM 后端时请检查 <code>LLM_PROVIDER</code>、地址、Key 和模型。</li>
       <li>若首次启动安装失败，App 会显示错误，并把详细日志写入 <code>~/Library/Logs/meeting-bot/首次启动安装.log</code>。</li>
       <li>芯片检查会同时识别原生 arm64 和具备 arm64 能力的 Apple Silicon 机器，避免兼容环境造成误判。</li>
       <li>构建载荷会排除 <code>.git</code> 和本地运行数据；完整安装会清理旧 App 资源，避免残留文件破坏签名。</li>

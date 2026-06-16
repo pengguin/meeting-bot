@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>会议纪要助手 0.2.14 使用说明</title>
+  <title>会议纪要助手 0.3.0 使用说明</title>
   <style>
     :root {
       --text: #17202a;
@@ -89,10 +89,10 @@
 </head>
 <body>
   <main>
-    <h1>会议纪要助手 0.2.14 使用说明</h1>
+    <h1>会议纪要助手 0.3.0 使用说明</h1>
     <p class="lead">
       会议纪要助手是一个本地运行的飞书会议助手。它接收飞书中的会议录音或转录文字，
-      在本机完成转写、说话人分离、纪要生成和文件导出，再把正式纪要回传到飞书。
+      在本机完成转写、说话人分离、纪要生成和文件导出，再把正式纪要回传到飞书；纪要生成可使用 Codex CLI、OpenAI 兼容 API、Anthropic、LM Studio 或 Ollama。
     </p>
 
     <h2>界面概览</h2>
@@ -111,7 +111,7 @@
           截图位：主界面概览<br>
           建议放入 <code>docs/assets/main-overview.png</code>
         </div>
-        <p>用于集中查看功能、状态、运行环境、最近会议和近期会议。</p>
+        <p>使用原生分段控件在“概览 / 会议库”之间整窗切换，集中查看功能、状态、运行环境、最近会议和近期会议。</p>
       </section>
       <section class="card">
         <h3>会议库</h3>
@@ -119,7 +119,7 @@
           截图位：会议库<br>
           建议放入 <code>docs/assets/library.png</code>
         </div>
-        <p>支持搜索、标签、时间筛选、备注、真实会议时间、说话人标注、跨会议关联、本地新增会议，以及在详情页直接切换中文纪要类型。</p>
+        <p>采用原生三栏布局和固定工具栏，支持搜索、标签、时间筛选、备注、真实会议时间、说话人标注、跨会议关联、本地新增会议，以及在详情页直接切换中文纪要类型。</p>
       </section>
       <section class="card">
         <h3>正式纪要</h3>
@@ -156,6 +156,7 @@
       <li>接收飞书录音文件或已转录文字材料。</li>
       <li>完成音频转换、说话人分离、语音转写和纪要生成；分离与转写均显示实时进度。</li>
       <li>Apple Silicon 上说话人分离优先使用 Apple GPU；语音转写默认启用 16 线程与批量处理。</li>
+      <li>纪要生成默认使用 Codex CLI，也可切换到 OpenAI 兼容 API、Anthropic、LM Studio 或 Ollama。</li>
       <li>支持重复材料复用，避免重复转写。</li>
       <li>支持引用历史音频重新生成纪要，或强制重新转录。</li>
       <li>支持会后补充说话人姓名，并同步更新实名转录稿、会议纪要及导出文件。</li>
@@ -190,8 +191,18 @@ ASR_BATCH_SIZE=8
 ASR_BEAM_SIZE=5</code></pre>
     <p>默认配置保持 medium 模型和 beam size 5，并通过 CPU 线程和批量转写提速。减小模型或 beam size 可进一步加速，但可能降低中文准确率。</p>
 
+    <h2>纪要生成后端</h2>
+    <pre><code>LLM_PROVIDER=codex
+LLM_API_BASE=
+LLM_API_KEY=
+LLM_MODEL=
+LLM_TIMEOUT_SECONDS=600</code></pre>
+    <p>默认后端是 Codex CLI；如需使用其他服务，可在设置页或 <code>.env</code> 中切换到 OpenAI 兼容 API、Anthropic、LM Studio 或 Ollama。</p>
+
     <h2>更新记录</h2>
     <ul>
+      <li>0.3.0 主线切到新的原生 macOS UI：概览和会议库使用顶部原生分段切换，会议库采用原生三栏、搜索、固定工具栏和品牌青绿色强调色。</li>
+      <li>纪要生成支持多 LLM 后端，不再只能使用 Codex CLI。</li>
       <li>会议处理期间，顶部状态栏基于当前所选原图标播放动画，不再显示带圈声波；声波由左向右单向律动，脉冲滚动跳动，动作持续 0.5 秒、暂停 1 秒后重复。</li>
       <li>查看原始转录时，录音进度条在拖动过程中只预览目标时间，松手后再执行音频跳转，以保持拖拽流畅。</li>
       <li>说话人标注保存后同步更新转录稿和会议纪要，并统一匿名标签与未知说话人显示。</li>
@@ -208,7 +219,7 @@ ASR_BEAM_SIZE=5</code></pre>
       <li>外观设置只保留声波、脉冲两套状态栏图标，以及白色、黑色两种图标颜色。</li>
       <li>会议库列表中 Shift 改为范围选择，Command / Control 用于逐项多选。</li>
       <li>会议右键首项改为打开文件夹；缺失的 HTML、DOCX、MD、PDF 可在文件按钮右键中直接生成。</li>
-      <li>升级会补充识别 Application Support 下的旧环境，并在复用虚拟环境前校验 Python 版本；Codex CLI 会校验登录状态。</li>
+      <li>升级会补充识别 Application Support 下的旧环境，并在复用虚拟环境前校验 Python 版本；默认 Codex 后端会校验登录状态。</li>
       <li>会议生成完成后的状态栏提示图标，在点击状态栏、打开主界面或点击通知后恢复默认状态。</li>
       <li>外观设置中的状态栏图标方案改为可视化图标按钮，状态栏图标白色、黑色会真实生效。</li>
       <li>会议类型设置左侧列表加高，底部按钮改为类别、类型、删除，并在列表宽度内分散对齐。</li>

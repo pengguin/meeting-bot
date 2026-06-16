@@ -1,6 +1,6 @@
 # 会议纪要助手 线程交接总结
 
-生成时间：2026-05-18（2026-05-20 追加 0.2.14 修订轮次）
+生成时间：2026-05-18（2026-05-20 追加 0.2.14 修订轮次；2026-06-16 追加 0.3.0 主线交接）
 
 本文档用于帮助新线程中的 agent 快速理解本轮开发上下文、已完成工作、关键文件和后续开发入口。
 
@@ -18,11 +18,35 @@
 - 飞书开放平台企业自建应用。
 - Hugging Face Token，用于 pyannote 说话人分离。
 - faster-whisper，用于 ASR。
-- Codex CLI，用于会议分类和结构化纪要生成。
+- 纪要生成 LLM 后端：默认 Codex CLI，也可切换到 OpenAI 兼容 API、Anthropic、LM Studio 或 Ollama。
 - ffmpeg，用于音频转换。
 - LibreOffice，用于 DOCX 转 PDF。
 
 ## 本轮主要工作
+
+### 当前主线状态（2026-06-16 / 0.3.0 build 28）
+
+本地 `main` 已切到 UI 分支作为后续主线，当前 `HEAD` 与 `origin/main`、`origin/ui-redesign-xiong` 均为 `4ddc0f3`。旧主线基线 `3303606` 仅作为历史远端分支保留，不再作为后续开发入口。
+
+当前主线已包含以下能力和约定：
+
+- macOS App 采用新的原生 UI：顶部 `概览 / 会议库` 分段切换、会议库 `NavigationSplitView` 三栏、原生搜索、固定工具栏和品牌青绿色强调色。
+- 纪要生成不再绑定单一 Codex CLI；`llm_backend.py` 支持 `codex`、`openai`、`anthropic`、`lm-studio`、`ollama`，设置页和首次启动向导可配置后端。
+- 会议处理状态栏动画基于用户原有声波或脉冲图标播放，不再在生成纪要时切换为带圈声波。
+- 本地新增会议支持录音和转录稿拖拽，关闭新增窗口后仍在主窗口底部显示进度并提供“中止”。
+- 说话人分离和语音转写均有实时进度；Apple Silicon 说话人分离优先 MPS，不兼容步骤回退 CPU。
+- 说话人显示统一为 `SPEAKER_00 -> 说话人1`、`UNKNOWN -> 未知说话人`；保存真实姓名后会同步重生成转录稿、会议纪要和已有导出文件。
+- 原始转录音频拖动改为预览时间、松手后一次性跳转，降低长音频播放进度条卡顿。
+- 发布脚本 `MeetingBotMenuBarApp/build_release_app.sh` 当前版本为 `0.3.0`、构建号 `28`；安装盘脚本版本已同步为 `0.3.0`。
+- 开发测试依赖新增 `requirements-dev.txt`；App 虚拟环境中已安装 pytest，`tests/` 目前覆盖 ASR 参数、中文简体转换、说话人分离 MPS 回退、说话人显示同步、转写进度和 LLM 后端。
+
+本轮新增或纳入提交的测试文件：
+
+- `tests/test_asr_runtime.py`
+- `tests/test_chinese_text.py`
+- `tests/test_diarization_runtime.py`
+- `tests/test_speaker_labels.py`
+- `tests/test_transcription_progress.py`
 
 ### 0.2.14 修订轮次
 
@@ -379,34 +403,38 @@
 ### 打包产物
 
 - `dist/会议纪要助手.app`
-- `dist/会议纪要助手 0.2.14 安装盘.dmg`
-- `dist/线程交接汇总 0.2.14.md`
+- 默认安装盘路径：`dist/会议纪要助手 0.3.0 安装盘.dmg`
+- 默认线程交接导出路径：`dist/线程交接汇总 0.3.0.md`
 
 ## 已执行验证
 
-0.2.14 本轮执行过以下检查：
+2026-06-16 / 0.3.0 主线执行过以下检查：
 
 ```bash
-python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
+"$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m pytest --version
+"$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m pytest tests -q
 bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhouse.sh scripts/doctor.sh scripts/install_optional_tools.sh scripts/preflight.sh scripts/upgrade.sh start_bot.sh
-python3 -m pytest tests
-bash scripts/preflight.sh
-bash scripts/doctor.sh
+PYTHON_BIN="$HOME/Library/Application Support/meeting-bot/.venv/bin/python" ENV_FILE=/tmp/meeting-bot-missing-env-for-preflight bash scripts/preflight.sh
+"$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
 bash MeetingBotMenuBarApp/build_release_app.sh
-bash scripts/build_setup_package.sh
+/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/会议纪要助手.app/Contents/Info.plist'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' 'dist/会议纪要助手.app/Contents/Info.plist'
+file 'dist/会议纪要助手.app/Contents/MacOS/FeishuMeetingBot'
+codesign --verify --deep --strict --verbose=2 'dist/会议纪要助手.app'
 ```
 
 验证结果：
 
-- Python 编译检查通过。
+- pytest 已安装并可用，版本为 `9.1.0`。
+- 测试结果：`34 passed in 0.77s`。
 - Shell 脚本语法检查通过。
-- 现有测试 `7 passed`。
-- 安装前检查可执行完成；当前机器仅有“无法读取物理内存”的提示级警告。
-- 自检完成，Codex CLI 登录状态通过。
-- 菜单栏 App 已重新构建，`Info.plist` 版本为 `0.2.14`，构建号为 `16`。
+- 安装前检查可执行完成；使用缺失 `.env` 路径时不会中断，当前机器仅有“无法读取物理内存”的提示级警告。
+- Python 编译检查通过。
+- 菜单栏 App 已重新构建，`Info.plist` 版本为 `0.3.0`，构建号为 `28`。
+- App 可执行文件为 `Mach-O 64-bit executable arm64`。
+- `codesign --verify --deep --strict` 通过。
 - App 内嵌载荷路径为 `Contents/Resources/bootstrap/meeting-bot`，未生成旧 `bootstrap/feishu-meeting-bot`。
-- `scripts/build_setup_package.sh` 已在系统环境下成功生成 `dist/会议纪要助手 0.2.14 安装盘.dmg` 和 `dist/线程交接汇总 0.2.14.md`。
-- 发行包过滤规则已检查，不含敏感配置和运行数据。
+- `scripts/build_setup_package.sh` 默认版本号已同步到 `0.3.0`；本轮未重新生成 DMG。
 
 ## 备份目录
 

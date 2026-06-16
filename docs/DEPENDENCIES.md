@@ -1,4 +1,4 @@
-# 会议纪要助手 0.2 依赖说明
+# 会议纪要助手 0.3 依赖说明
 
 ## 一、Python 依赖
 
@@ -27,13 +27,20 @@ python3 -m venv .venv
 - 说话人分离使用 `pyannote.audio`；Apple Silicon 默认优先使用 MPS GPU，不兼容操作自动回退 CPU。
 - 语音转写使用 `faster-whisper` / CTranslate2；当前 macOS 路径使用 CPU int8、显式线程数和批量转写。
 
+开发和回归测试额外使用 `requirements-dev.txt`：
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest tests -q
+```
+
 ## 二、系统工具
 
 后台服务还依赖以下系统级工具：
 
 - `ffmpeg`：把上传音频转换为 16 kHz 单声道 WAV，供后续分析使用。
 - `LibreOffice` / `soffice`：把生成的 DOCX 文件转换为 PDF。
-- `codex`：完成会议分类和结构化纪要生成。
+- LLM 后端：默认使用本机 Codex CLI，也可切换到 OpenAI 兼容 API、Anthropic、LM Studio 或 Ollama。
 
 在 macOS 上可通过 Homebrew 安装常见系统工具：
 
@@ -41,11 +48,13 @@ python3 -m venv .venv
 brew install ffmpeg libreoffice
 ```
 
-Codex CLI 需要单独安装并完成登录。安装后应能在终端中运行：
+若使用默认 `codex` 后端，Codex CLI 需要单独安装并完成登录。安装后应能在终端中运行：
 
 ```bash
 codex --version
 ```
+
+若使用 HTTP LLM 后端，请准备对应服务的 API 地址、模型名和密钥；本地 LM Studio / Ollama 通常不需要 API Key。
 
 ## 三、账号与密钥
 
@@ -54,6 +63,7 @@ codex --version
 - `FEISHU_APP_ID`
 - `FEISHU_APP_SECRET`
 - `HF_TOKEN`
+- 使用 HTTP LLM 后端时的 `LLM_API_KEY`
 
 它们写在本机 `.env` 文件中，不应放入发行包，也不应上传到公开仓库。
 
@@ -67,6 +77,11 @@ codex --version
 - `ASR_BATCH_SIZE`：批量转写大小，默认 8；设为 1 可关闭批量模式。
 - `ASR_BEAM_SIZE`：束搜索大小，默认 5；减小可提速但可能降低准确率。
 - `DIARIZATION_MODEL`
+- `LLM_PROVIDER`：可选 `codex`、`openai`、`anthropic`、`lm-studio`、`ollama`。
+- `LLM_API_BASE`：OpenAI 兼容服务或本地服务地址；留空时使用所选后端默认值。
+- `LLM_API_KEY`：OpenAI 兼容服务或 Anthropic 必填；本地 LM Studio / Ollama 一般留空。
+- `LLM_MODEL`：OpenAI 兼容服务必填；Anthropic 和本地服务可按默认规则选择。
+- `LLM_TIMEOUT_SECONDS`
 - `CODEX_BIN`
 - `FFMPEG_BIN`
 - `REPORT_BODY_FONT`
@@ -103,7 +118,7 @@ $HOME/Library/LaunchAgents/com.pgui.feishu-meeting-bot.plist
 - Python 虚拟环境。
 - `ffmpeg`。
 - LibreOffice。
-- Codex CLI。
+- 纪要生成后端配置；使用默认 Codex 后端时会检查 Codex CLI。
 - `.env` 是否填写完整。
 - LaunchAgent 是否存在。
 
