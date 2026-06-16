@@ -1046,10 +1046,33 @@ private struct MeetingLibraryView: View {
                     Label(meetingTypeDisplayName(for: meeting.meetingType), systemImage: "tag")
                 }
                 .menuStyle(.borderlessButton)
-                Label(meeting.version == "named" ? "实名版" : "匿名版", systemImage: "person.2")
+                Label(meeting.versionDisplayName, systemImage: meeting.isTemporary ? "hourglass" : "person.2")
             }
             .font(.callout)
             .foregroundStyle(.secondary)
+
+            if meeting.isTemporary {
+                HStack(spacing: 10) {
+                    Label(
+                        meeting.processingMessage.isEmpty
+                            ? StageDisplay.name(for: meeting.processingStage)
+                            : meeting.processingMessage,
+                        systemImage: meeting.canRetryReport ? "exclamationmark.triangle.fill" : "clock"
+                    )
+                    .foregroundStyle(meeting.canRetryReport ? Color.statusError : Color.statusProcessing)
+
+                    if meeting.canRetryReport {
+                        Button {
+                            retryReportGeneration(for: meeting)
+                        } label: {
+                            Label("重试生成纪要", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.regeneratingSessionIDs.contains(meeting.sessionID))
+                    }
+                }
+                .font(.callout)
+            }
 
             HStack(spacing: 10) {
                 if let actualMeetingDate = draft.actualMeetingDate {
@@ -1135,6 +1158,16 @@ private struct MeetingLibraryView: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    private func retryReportGeneration(for meeting: MeetingRecord) {
+        let templateID = meeting.requestedTemplateID?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        store.regenerateReport(
+            for: meeting,
+            templateID: templateID.isEmpty ? "general_meeting" : templateID,
+            version: "anonymous"
+        )
     }
 
     private func summary(for meeting: MeetingRecord) -> some View {
@@ -1530,6 +1563,12 @@ private struct MeetingLibraryView: View {
     private func meetingContextMenu(for meeting: MeetingRecord) -> some View {
         Button("打开文件夹") {
             FileOpener.open(meeting.sessionURL)
+        }
+        if meeting.canRetryReport {
+            Button("重试生成纪要") {
+                retryReportGeneration(for: meeting)
+            }
+            .disabled(store.regeneratingSessionIDs.contains(meeting.sessionID))
         }
         Menu("打开文件") {
             meetingFileMenuItem("HTML", url: meeting.latestHTMLURL, format: "html", meeting: meeting)

@@ -23,6 +23,11 @@ struct MeetingRecord: Identifiable, Equatable {
     let transcriptURL: URL?
     let transcriptSegmentsURL: URL?
     let audioURL: URL?
+    let isTemporary: Bool
+    let processingStage: String
+    let processingMessage: String
+    let canRetryReport: Bool
+    let requestedTemplateID: String?
 
     var createdAtDisplay: String {
         guard let createdAt else {
@@ -43,6 +48,17 @@ struct MeetingRecord: Identifiable, Equatable {
         ]
         .joined(separator: "\n")
         .lowercased()
+    }
+
+    var versionDisplayName: String {
+        if isTemporary {
+            return canRetryReport ? "待生成纪要" : "处理中"
+        }
+        return version == "named" ? "实名版" : "匿名版"
+    }
+
+    var titleDisplayName: String {
+        title.isEmpty ? sessionID : title
     }
 }
 
@@ -240,6 +256,26 @@ private struct MeetingReportSnapshot: Decodable {
 
 private struct DiscussionTopicSnapshot: Decodable {
     let title: String?
+}
+
+private struct LocalMeetingStateSnapshot: Decodable {
+    let taskStatus: String?
+    let stage: String?
+    let message: String?
+    let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case taskStatus = "task_status"
+        case stage
+        case message
+        case updatedAt = "updated_at"
+    }
+}
+
+private struct LocalMeetingRequestSnapshot: Decodable {
+    let title: String?
+    let template: String?
+    let formats: [String]?
 }
 
 final class MeetingLibraryStore: ObservableObject {
@@ -1270,6 +1306,11 @@ final class MeetingLibraryStore: ObservableObject {
                         stderr: trimmedStderr,
                         fallback: "新增会议失败"
                     )
+                    self.reload(forceScan: true)
+                    if let sessionID = self.currentRuntimeStatusPayload()?["session_id"] as? String,
+                       !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.selectMeeting(sessionID: sessionID)
+                    }
                     completion(nil)
                 }
             }
@@ -1324,6 +1365,13 @@ final class MeetingLibraryStore: ObservableObject {
         }
         if let message = progress["message"] as? String, !message.isEmpty {
             localMeetingCreationMessage = message
+        }
+        if let sessionID = progress["session_id"] as? String,
+           !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            reload(forceScan: true)
+            if isCreatingLocalMeeting || selectedMeetingID == nil || selectedMeetingID == sessionID {
+                selectMeeting(sessionID: sessionID)
+            }
         }
     }
 
@@ -1537,11 +1585,6 @@ final class MeetingLibraryStore: ObservableObject {
             in: sessionURL,
             matching: ["report_named.json", "report_anon.json"]
         )
-        guard let reportURL,
-              let report = decodeReport(at: reportURL) else {
-            return nil
-        }
-
         let transcriptURL = preferredFile(
             in: sessionURL,
             matching: ["transcript_named.md", "transcript_anon.md"]
@@ -1551,18 +1594,79 @@ final class MeetingLibraryStore: ObservableObject {
         let speakerMapURL = sessionURL.appendingPathComponent("speaker_map.json")
         let detectedSpeakers = loadSpeakerIDs(from: speakerMapURL)
 
+        if let reportURL,
+           let report = decodeReport(at: reportURL) {
+            return MeetingRecord(
+                id: sessionID,
+                sessionID: sessionID,
+                sessionURL: sessionURL,
+                title: report.reportTitle ?? sessionID,
+                meetingType: report.meetingType ?? "unknown",
+                version: report.version ?? "anonymous",
+                takeaway: report.oneSentenceTakeaway ?? "",
+                summary: report.executiveSummary ?? "",
+                topics: (report.discussionTopics ?? [])
+                    .compactMap(\.title)
+                    .filter { !$0.isEmpty },
+                transcript: transcript,
+                detectedSpeakers: detectedSpeakers,
+                createdAt: DateDisplay.sessionDate(from: sessionID),
+                latestPDFURL: latestFile(in: sessionURL, pathExtension: "pdf"),
+                latestDOCXURL: latestFile(in: sessionURL, pathExtension: "docx"),
+                latestHTMLURL: latestFile(in: sessionURL, pathExtension: "html"),
+                latestMDURL: latestMarkdownSummary(in: sessionURL),
+                transcriptURL: transcriptURL,
+                transcriptSegmentsURL: preferredFile(
+                    in: sessionURL,
+                    matching: ["transcript_with_speaker_raw.json"]
+                ),
+                audioURL: preferredAudioFile(in: sessionURL),
+                isTemporary: false,
+                processingStage: "",
+                processingMessage: "",
+                canRetryReport: false,
+                requestedTemplateID: nil
+            )
+        }
+
+        let state = decodeLocalMeetingState(in: sessionURL)
+        let request = decodeLocalMeetingRequest(in: sessionURL)
+        guard state != nil || request != nil || transcriptURL != nil else {
+            return nil
+        }
+
+        let requestedTitle = request?.title?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sourceName = (try? String(contentsOf: sessionURL.appendingPathComponent("source_name.txt"), encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sourceMetadata = decodeJSONObject(at: sessionURL.appendingPathComponent("source_metadata.json"))
+        let metadataSourceName = (sourceMetadata["source_name"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let classification = decodeJSONObject(at: sessionURL.appendingPathComponent("classification.json"))
+        let classifiedTemplate = (classification["template"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stage = state?.stage ?? "pending"
+        let message = state?.message ?? (transcriptURL == nil ? "正在准备会议材料" : "转录稿已生成，等待生成纪要")
+        let requestedTemplate = request?.template ?? ""
+        let effectiveTemplateID = requestedTemplate == "auto" || requestedTemplate.isEmpty
+            ? (classifiedTemplate.isEmpty ? "general_meeting" : classifiedTemplate)
+            : requestedTemplate
+        let canRetry = transcriptURL != nil && (state?.taskStatus == "error" || state?.taskStatus == nil)
+
         return MeetingRecord(
             id: sessionID,
             sessionID: sessionID,
             sessionURL: sessionURL,
-            title: report.reportTitle ?? sessionID,
-            meetingType: report.meetingType ?? "unknown",
-            version: report.version ?? "anonymous",
-            takeaway: report.oneSentenceTakeaway ?? "",
-            summary: report.executiveSummary ?? "",
-            topics: (report.discussionTopics ?? [])
-                .compactMap(\.title)
-                .filter { !$0.isEmpty },
+            title: requestedTitle.isEmpty
+                ? (metadataSourceName.isEmpty ? (sourceName.isEmpty ? sessionID : sourceName) : metadataSourceName)
+                : requestedTitle,
+            meetingType: requestedTemplate == "auto" && classifiedTemplate.isEmpty ? "unknown" : effectiveTemplateID,
+            version: "draft",
+            takeaway: message,
+            summary: transcriptURL == nil
+                ? "会议已进入处理队列，转录稿生成后会自动更新。"
+                : "转录稿已保存在会议目录中；若纪要生成失败，可在此重试生成。",
+            topics: [],
             transcript: transcript,
             detectedSpeakers: detectedSpeakers,
             createdAt: DateDisplay.sessionDate(from: sessionID),
@@ -1578,8 +1682,36 @@ final class MeetingLibraryStore: ObservableObject {
                 in: sessionURL,
                 matching: ["transcript_with_speaker_raw.json"]
             ),
-            audioURL: preferredAudioFile(in: sessionURL)
+            audioURL: preferredAudioFile(in: sessionURL),
+            isTemporary: true,
+            processingStage: stage,
+            processingMessage: message,
+            canRetryReport: canRetry,
+            requestedTemplateID: effectiveTemplateID
         )
+    }
+
+    private func decodeLocalMeetingState(in sessionURL: URL) -> LocalMeetingStateSnapshot? {
+        decodeJSON(LocalMeetingStateSnapshot.self, at: sessionURL.appendingPathComponent("local_meeting_state.json"))
+    }
+
+    private func decodeLocalMeetingRequest(in sessionURL: URL) -> LocalMeetingRequestSnapshot? {
+        decodeJSON(LocalMeetingRequestSnapshot.self, at: sessionURL.appendingPathComponent("local_meeting_request.json"))
+    }
+
+    private func decodeJSON<T: Decodable>(_ type: T.Type, at url: URL) -> T? {
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private func decodeJSONObject(at url: URL) -> [String: Any] {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return object
     }
 
     private func decodeReport(at url: URL) -> MeetingReportSnapshot? {

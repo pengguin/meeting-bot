@@ -76,10 +76,20 @@ def runtime_timestamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def emit_progress(stage: str, message: str) -> None:
+def emit_progress(stage: str, message: str, session_path: Optional[Path] = None) -> None:
     try:
         print(
-            json.dumps({"progress": {"stage": stage, "message": message}}, ensure_ascii=False),
+            json.dumps(
+                {
+                    "progress": {
+                        "stage": stage,
+                        "message": message,
+                        "session_id": session_path.name if session_path else "",
+                        "session_dir": str(session_path) if session_path else "",
+                    }
+                },
+                ensure_ascii=False,
+            ),
             flush=True,
         )
     except OSError:
@@ -115,7 +125,30 @@ def write_runtime_status(
     tmp_path = RUNTIME_DIR / f".status_{uuid.uuid4().hex}.json.tmp"
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(RUNTIME_STATUS_FILE)
-    emit_progress(stage, message)
+    if session_path is not None:
+        state_path = session_path / "local_meeting_state.json"
+        state_tmp = session_path / f".local_meeting_state_{uuid.uuid4().hex}.tmp"
+        state_tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        state_tmp.replace(state_path)
+    emit_progress(stage, message, session_path)
+
+
+def write_local_meeting_request(
+    session_path: Path,
+    title: str,
+    template: str,
+    formats: set[str],
+) -> None:
+    payload = {
+        "title": title.strip(),
+        "template": template,
+        "formats": sorted(formats),
+        "updated_at": runtime_timestamp(),
+    }
+    (session_path / "local_meeting_request.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def write_meeting_done_event(
@@ -399,6 +432,8 @@ def create_session_from_transcript(
     title: str,
     transcript_path: Path,
     audio_path: Optional[Path],
+    template: str,
+    formats: set[str],
 ) -> tuple[Path, str, Dict[str, str]]:
     transcript_text = read_text_file(transcript_path)
     if audio_path is not None:
@@ -415,6 +450,8 @@ def create_session_from_transcript(
             "created_at": runtime_timestamp(),
         },
     )
+    write_local_meeting_request(session_path, title, template, formats)
+    write_runtime_status("processing", "importing_transcript", "正在导入转录稿", session_path)
     shutil.copy2(transcript_path, session_path / transcript_path.name)
     (session_path / "uploaded_transcript.txt").write_text(transcript_text.strip(), encoding="utf-8")
     transcript_markdown = normalize_uploaded_transcript_text(
@@ -436,7 +473,12 @@ def create_session_from_transcript(
     return session_path, transcript_markdown, speaker_map
 
 
-def create_session_from_audio(title: str, audio_path: Path) -> tuple[Path, str, Dict[str, str]]:
+def create_session_from_audio(
+    title: str,
+    audio_path: Path,
+    template: str,
+    formats: set[str],
+) -> tuple[Path, str, Dict[str, str]]:
     from pyannote.audio import Pipeline
 
     session_path = create_session(audio_path)
@@ -448,16 +490,17 @@ def create_session_from_audio(title: str, audio_path: Path) -> tuple[Path, str, 
             "created_at": runtime_timestamp(),
         },
     )
+    write_local_meeting_request(session_path, title, template, formats)
     session_audio = session_path / audio_path.name
     write_runtime_status("processing", "converting_audio", "正在转换音频", session_path)
     analysis_audio = convert_audio_to_wav_16k_mono(session_audio, session_path)
 
     write_runtime_status("processing", "loading_models", "正在加载转写模型", session_path)
     whisper_model = create_asr_model()
-    emit_progress("loading_models", f"转写模型已启用加速：{asr_runtime_description()}")
+    emit_progress("loading_models", f"转写模型已启用加速：{asr_runtime_description()}", session_path)
     diarization_pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL, token=HF_TOKEN)
     diarization_device = configure_diarization_pipeline(diarization_pipeline)
-    emit_progress("loading_models", f"说话人分离模型使用 {diarization_device.type.upper()} 运行")
+    emit_progress("loading_models", f"说话人分离模型使用 {diarization_device.type.upper()} 运行", session_path)
 
     write_runtime_status("processing", "diarization", "正在进行说话人分离", session_path)
     diarization_segments = diarize_audio(analysis_audio, session_path, diarization_pipeline)
@@ -626,6 +669,8 @@ def main() -> None:
                 args.title,
                 transcript_path,
                 audio_path,
+                args.template,
+                formats,
             )
         else:
             assert audio_path is not None
@@ -633,6 +678,8 @@ def main() -> None:
             session_path, transcript_markdown, speaker_map = create_session_from_audio(
                 args.title,
                 audio_path,
+                args.template,
+                formats,
             )
         result = generate_outputs(
             title=args.title,
