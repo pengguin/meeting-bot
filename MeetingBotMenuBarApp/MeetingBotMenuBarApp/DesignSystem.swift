@@ -59,6 +59,14 @@ enum AppColorTheme: String, CaseIterable, Identifiable {
         dynamicColor(light: lightAccent, dark: darkAccent)
     }
 
+    var softAccentColor: Color {
+        accentColor.opacity(0.12)
+    }
+
+    static func resolved(_ rawValue: String) -> AppColorTheme {
+        AppColorTheme(rawValue: rawValue) ?? .green
+    }
+
     private var lightAccent: (CGFloat, CGFloat, CGFloat) {
         switch self {
         case .blue:
@@ -84,7 +92,7 @@ enum AppColorTheme: String, CaseIterable, Identifiable {
     static var current: AppColorTheme {
         let rawValue = UserDefaults.standard.string(forKey: storageKey)
             ?? AppColorTheme.green.rawValue
-        return AppColorTheme(rawValue: rawValue) ?? .green
+        return AppColorTheme.resolved(rawValue)
     }
 }
 

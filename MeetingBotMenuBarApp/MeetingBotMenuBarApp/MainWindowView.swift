@@ -24,7 +24,7 @@ struct MainWindowView: View {
         libraryView
             .frame(minWidth: 1080, minHeight: 680)
             .background(Color(nsColor: .windowBackgroundColor))
-            .tint(.brandAccent)
+            .tint(currentColorTheme.accentColor)
             .preferredColorScheme(resolvedColorScheme)
             .onAppear {
                 normalizeSelection()
@@ -40,6 +40,10 @@ struct MainWindowView: View {
                 AppAppearance.synchronizeWindows(for: newValue)
             }
             .animation(.easeInOut(duration: 0.15), value: appColorTheme)
+    }
+
+    private var currentColorTheme: AppColorTheme {
+        AppColorTheme.resolved(appColorTheme)
     }
 
     private var libraryView: some View {
@@ -485,6 +489,10 @@ private struct MeetingLibraryView: View {
     @State private var folderPendingHardDeletion: LibraryFolder?
     @FocusState private var focusedNavigationColumn: NavigationColumn?
 
+    private var currentColorTheme: AppColorTheme {
+        AppColorTheme.resolved(appColorTheme)
+    }
+
     private var libraryHalf1: some View {
         VStack(spacing: 0) {
             libraryTopBar
@@ -504,6 +512,7 @@ private struct MeetingLibraryView: View {
                 focusedNavigationColumn = .folders
             }
         }
+        .tint(currentColorTheme.accentColor)
         .animation(.easeInOut(duration: 0.15), value: appColorTheme)
         .alert("新建文件夹", isPresented: $isCreatingFolder) {
             TextField("文件夹名称", text: $pendingFolderName)
@@ -748,7 +757,8 @@ private struct MeetingLibraryView: View {
                         meeting: meeting,
                         labels: store.labels(for: meeting),
                         displayDate: store.displayMeetingDate(for: meeting),
-                        isSelected: store.selectedMeetingIDs.contains(meeting.id)
+                        isSelected: store.selectedMeetingIDs.contains(meeting.id),
+                        colorTheme: currentColorTheme
                     )
                     .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
                     .listRowSeparator(.hidden)
@@ -913,7 +923,7 @@ private struct MeetingLibraryView: View {
             }
             .buttonStyle(.borderless)
             .popover(isPresented: $isDateFilterPresented, arrowEdge: .bottom) {
-                MeetingDateFilterPopover(store: store)
+                MeetingDateFilterPopover(store: store, colorTheme: currentColorTheme)
             }
             .help(store.dateFilterDisplayName == "全部时间" ? "按时间筛选" : store.dateFilterDisplayName)
 
@@ -1152,7 +1162,7 @@ private struct MeetingLibraryView: View {
                 }
 
                 if !meeting.topics.isEmpty {
-                    FlexibleChipRow(items: meeting.topics)
+                    FlexibleChipRow(items: meeting.topics, colorTheme: currentColorTheme)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1160,7 +1170,9 @@ private struct MeetingLibraryView: View {
     }
 
     private func labelsEditor(for meeting: MeetingRecord) -> some View {
-        GroupBox("标签") {
+        let accentColor = currentColorTheme.accentColor
+
+        return GroupBox("标签") {
             VStack(alignment: .leading, spacing: 8) {
                 if draftLabels(for: meeting).isEmpty {
                     Text("尚未选择标签")
@@ -1173,7 +1185,8 @@ private struct MeetingLibraryView: View {
                         maximumWidth: 150,
                         expandsItems: false,
                         columnSpacing: 6,
-                        rowSpacing: 6
+                        rowSpacing: 6,
+                        colorTheme: currentColorTheme
                     ) { label in
                         Button {
                             toggleDraftLabel(label, for: meeting)
@@ -1189,11 +1202,11 @@ private struct MeetingLibraryView: View {
                             .padding(.vertical, 5)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.brandAccent.opacity(0.14))
+                                    .fill(accentColor.opacity(0.14))
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Color.brandAccent.opacity(0.38))
+                                    .stroke(accentColor.opacity(0.38))
                             )
                         }
                         .buttonStyle(.plain)
@@ -1224,7 +1237,8 @@ private struct MeetingLibraryView: View {
                         maximumWidth: 150,
                         expandsItems: false,
                         columnSpacing: 4,
-                        rowSpacing: 4
+                        rowSpacing: 4,
+                        colorTheme: currentColorTheme
                     ) { label in
                         let isSelected = draftLabels(for: meeting).contains(label)
                         Button {
@@ -1238,7 +1252,7 @@ private struct MeetingLibraryView: View {
                                     RoundedRectangle(cornerRadius: 6)
                                         .fill(
                                             isSelected
-                                                ? Color.brandAccent.opacity(0.18)
+                                                ? accentColor.opacity(0.18)
                                                 : Color(nsColor: .controlBackgroundColor)
                                         )
                                 )
@@ -1246,7 +1260,7 @@ private struct MeetingLibraryView: View {
                                     RoundedRectangle(cornerRadius: 6)
                                         .stroke(
                                             isSelected
-                                                ? Color.brandAccent.opacity(0.55)
+                                                ? accentColor.opacity(0.55)
                                                 : Color(nsColor: .separatorColor),
                                             lineWidth: 1
                                         )
@@ -1474,7 +1488,7 @@ private struct MeetingLibraryView: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(selected ? Color.brandAccent.opacity(0.12) : .clear)
+                    .fill(selected ? currentColorTheme.softAccentColor : .clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
@@ -2340,8 +2354,11 @@ private struct TranscriptSegmentRow: View {
     let meeting: MeetingRecord
     @Binding var segment: TranscriptSegment
     let isActive: Bool
+    @AppStorage(AppPreferenceKeys.appColorTheme) private var appColorTheme = AppColorTheme.green.rawValue
 
     var body: some View {
+        let accentColor = AppColorTheme.resolved(appColorTheme).accentColor
+
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("\(timestamp(segment.start)) - \(timestamp(segment.end))")
@@ -2365,7 +2382,7 @@ private struct TranscriptSegmentRow: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(
-                            isActive ? Color.brandAccent : Color(nsColor: .separatorColor),
+                            isActive ? accentColor : Color(nsColor: .separatorColor),
                             lineWidth: isActive ? 1.5 : 1
                         )
                 )
@@ -2373,7 +2390,7 @@ private struct TranscriptSegmentRow: View {
         .padding(10)
         .background(
             isActive
-                ? Color.brandAccent.opacity(0.08)
+                ? accentColor.opacity(0.08)
                 : Color(nsColor: .controlBackgroundColor)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -2565,6 +2582,7 @@ private struct MeetingListRow: View {
     let labels: [String]
     let displayDate: String
     let isSelected: Bool
+    let colorTheme: AppColorTheme
 
     private var speakerCount: Int {
         meeting.detectedSpeakers
@@ -2584,14 +2602,16 @@ private struct MeetingListRow: View {
     }
 
     var body: some View {
+        let accentColor = colorTheme.accentColor
+
         HStack(spacing: Spacing.sm) {
             RoundedRectangle(cornerRadius: CornerRadius.small)
-                .fill(Color.brandAccentSoft)
+                .fill(colorTheme.softAccentColor)
                 .frame(width: 34, height: 34)
                 .overlay {
                     Image(systemName: MeetingTypeStyle.symbol(for: meeting.meetingType))
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Color.brandAccent)
+                        .foregroundStyle(accentColor)
                 }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -2616,7 +2636,7 @@ private struct MeetingListRow: View {
                 if !labels.isEmpty {
                     Text(labels.joined(separator: " · "))
                         .font(.caption2)
-                        .foregroundStyle(Color.brandAccent)
+                        .foregroundStyle(accentColor)
                         .lineLimit(1)
                 }
             }
@@ -2624,7 +2644,7 @@ private struct MeetingListRow: View {
             Spacer(minLength: 6)
 
             Circle()
-                .fill(hasGeneratedOutput ? Color.statusDone : Color(nsColor: .tertiaryLabelColor))
+                .fill(hasGeneratedOutput ? accentColor : Color(nsColor: .tertiaryLabelColor))
                 .frame(width: 7, height: 7)
                 .help(hasGeneratedOutput ? "已生成纪要" : "尚未生成纪要")
         }
@@ -2633,12 +2653,12 @@ private struct MeetingListRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.medium)
-                .fill(isSelected ? Color.brandAccentSoft : .clear)
+                .fill(isSelected ? colorTheme.softAccentColor : .clear)
         )
         .overlay(alignment: .leading) {
             if isSelected {
                 RoundedRectangle(cornerRadius: 1.5)
-                    .fill(Color.brandAccent)
+                    .fill(accentColor)
                     .frame(width: 3, height: 22)
             }
         }
@@ -2647,6 +2667,7 @@ private struct MeetingListRow: View {
 
 private struct MeetingDateFilterPopover: View {
     @ObservedObject var store: MeetingLibraryStore
+    let colorTheme: AppColorTheme
     @State private var visibleMonth = Date()
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
@@ -2778,14 +2799,14 @@ private struct MeetingDateFilterPopover: View {
             return .white
         }
 
-        return store.hasMeeting(on: date) ? .green : .primary
+        return store.hasMeeting(on: date) ? colorTheme.accentColor : .primary
     }
 
     @ViewBuilder
     private func background(for date: Date) -> some View {
         if isSelected(date) {
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color.brandAccent)
+                .fill(colorTheme.accentColor)
         } else {
             Color.clear
         }
@@ -2958,8 +2979,9 @@ struct FlexibleChipRow<Content: View>: View {
     let expandsItems: Bool
     let columnSpacing: CGFloat
     let rowSpacing: CGFloat
+    let colorTheme: AppColorTheme
 
-    init(items: [String]) where Content == Text {
+    init(items: [String], colorTheme: AppColorTheme = .current) where Content == Text {
         self.items = items
         self.content = nil
         self.minimumWidth = 140
@@ -2967,6 +2989,7 @@ struct FlexibleChipRow<Content: View>: View {
         self.expandsItems = true
         self.columnSpacing = 8
         self.rowSpacing = 8
+        self.colorTheme = colorTheme
     }
 
     init(
@@ -2976,6 +2999,7 @@ struct FlexibleChipRow<Content: View>: View {
         expandsItems: Bool = true,
         columnSpacing: CGFloat = 8,
         rowSpacing: CGFloat = 8,
+        colorTheme: AppColorTheme = .current,
         @ViewBuilder content: @escaping (String) -> Content
     ) {
         self.items = items
@@ -2985,6 +3009,7 @@ struct FlexibleChipRow<Content: View>: View {
         self.expandsItems = expandsItems
         self.columnSpacing = columnSpacing
         self.rowSpacing = rowSpacing
+        self.colorTheme = colorTheme
     }
 
     var body: some View {
@@ -2999,7 +3024,7 @@ struct FlexibleChipRow<Content: View>: View {
                         .lineLimit(1)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(Color.brandAccent.opacity(0.10))
+                        .background(colorTheme.accentColor.opacity(0.10))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
