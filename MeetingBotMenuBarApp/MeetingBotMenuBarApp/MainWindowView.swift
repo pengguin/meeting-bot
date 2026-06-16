@@ -12,6 +12,7 @@ struct MainWindowView: View {
     let openSettingsWindow: () -> Void
     @State private var selectedTab: MainWindowTabKind = .library
     @AppStorage("preferredMainColorScheme") private var preferredMainColorScheme = "system"
+    @AppStorage(AppPreferenceKeys.appColorTheme) private var appColorTheme = AppColorTheme.green.rawValue
     @AppStorage("showOverviewTab") private var showOverviewTab = true
     @AppStorage("mainTabOrder") private var mainTabOrderRaw = "library,overview"
 
@@ -38,6 +39,7 @@ struct MainWindowView: View {
             .onChange(of: preferredMainColorScheme) { _, newValue in
                 AppAppearance.synchronizeWindows(for: newValue)
             }
+            .animation(.easeInOut(duration: 0.15), value: appColorTheme)
     }
 
     private var libraryView: some View {
@@ -70,6 +72,7 @@ private struct MainOverviewView: View {
     @ObservedObject var libraryStore: MeetingLibraryStore
     @Binding var selectedTab: MainWindowTabKind
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
+    @AppStorage(AppPreferenceKeys.appColorTheme) private var appColorTheme = AppColorTheme.green.rawValue
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -88,6 +91,7 @@ private struct MainOverviewView: View {
             }
             .padding(20)
         }
+        .animation(.easeInOut(duration: 0.15), value: appColorTheme)
         .onAppear {
             store.refresh()
             libraryStore.reload()
@@ -98,7 +102,7 @@ private struct MainOverviewView: View {
     }
 
     private var functionPanel: some View {
-        OverviewPanel(title: "功能", accentColor: .blue) {
+        OverviewPanel(title: "功能", accentColor: .brandAccent) {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(spacing: 8) {
@@ -168,7 +172,7 @@ private struct MainOverviewView: View {
     }
 
     private var statusPanel: some View {
-        OverviewPanel(title: "状态", accentColor: .blue) {
+        OverviewPanel(title: "状态", accentColor: .brandAccent) {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 12) {
                     StatusRow(
@@ -189,7 +193,7 @@ private struct MainOverviewView: View {
                             title: "阶段",
                             value: status.stageDisplayName,
                             systemImage: "point.3.connected.trianglepath.dotted",
-                            color: .blue
+                            color: .brandAccent
                         )
                         StatusRow(
                             title: "更新",
@@ -215,7 +219,7 @@ private struct MainOverviewView: View {
     }
 
     private var latestMeetingPanel: some View {
-        OverviewPanel(title: "最近一次会议", accentColor: .teal) {
+        OverviewPanel(title: "最近一次会议", accentColor: .brandAccent) {
             VStack(alignment: .leading, spacing: 12) {
                 if let meeting = store.latestMeeting {
                     Text(meeting.titleDisplayName)
@@ -321,7 +325,7 @@ private struct MainOverviewView: View {
     }
 
     private var environmentPanel: some View {
-        OverviewPanel(title: "运行环境", accentColor: .blue) {
+        OverviewPanel(title: "运行环境", accentColor: .brandAccent) {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(store.environmentChecks) { check in
                     HStack(spacing: 10) {
@@ -357,7 +361,7 @@ private struct MainOverviewView: View {
     }
 
     private var recentMeetingsPanel: some View {
-        OverviewPanel(title: "近期会议", accentColor: .teal) {
+        OverviewPanel(title: "近期会议", accentColor: .brandAccent) {
             VStack(alignment: .leading, spacing: 10) {
                 if store.recentMeetings.isEmpty {
                     Text("暂无会议结果")
@@ -460,6 +464,7 @@ private struct MeetingLibraryView: View {
     @Binding var preferredColorScheme: String
     @Binding var selectedTab: MainWindowTabKind
     let showsOverviewSwitch: Bool
+    @AppStorage(AppPreferenceKeys.appColorTheme) private var appColorTheme = AppColorTheme.green.rawValue
     @State private var showSidebar = true
     @State private var isDateFilterPresented = false
     @State private var isCreatingFolder = false
@@ -499,6 +504,7 @@ private struct MeetingLibraryView: View {
                 focusedNavigationColumn = .folders
             }
         }
+        .animation(.easeInOut(duration: 0.15), value: appColorTheme)
         .alert("新建文件夹", isPresented: $isCreatingFolder) {
             TextField("文件夹名称", text: $pendingFolderName)
             Button("取消", role: .cancel) {
@@ -728,7 +734,7 @@ private struct MeetingLibraryView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 20)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
         .background(.bar)
@@ -813,16 +819,6 @@ private struct MeetingLibraryView: View {
 
     private var libraryTopBar: some View {
         HStack(spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    showSidebar.toggle()
-                }
-            } label: {
-                Image(systemName: "sidebar.left")
-            }
-            .buttonStyle(.borderless)
-            .help("显示 / 隐藏边栏")
-
             Picker("", selection: $selectedTab) {
                 Text("概览").tag(MainWindowTabKind.overview)
                 Text("会议库").tag(MainWindowTabKind.library)
@@ -832,6 +828,45 @@ private struct MeetingLibraryView: View {
             .frame(width: 180)
 
             Spacer(minLength: 12)
+
+            if selectedTab == .library {
+                libraryOnlyToolbarControls
+            }
+
+            Button {
+                preferredColorScheme = cycledAppearanceMode(after: preferredColorScheme)
+            } label: {
+                Image(systemName: appearanceModeSymbol(preferredColorScheme))
+            }
+            .buttonStyle(.borderless)
+            .help("切换显示模式")
+
+            Button {
+                openSettingsWindow()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("设置")
+        }
+        .font(.system(size: 15))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+    }
+
+    private var libraryOnlyToolbarControls: some View {
+        HStack(spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    showSidebar.toggle()
+                }
+            } label: {
+                Image(systemName: "sidebar.left")
+            }
+            .buttonStyle(.borderless)
+            .help("显示 / 隐藏边栏")
 
             Button {
                 openNewMeetingWindow()
@@ -890,28 +925,7 @@ private struct MeetingLibraryView: View {
             }
             .buttonStyle(.borderless)
             .help("重新扫描 sessions")
-
-            Button {
-                preferredColorScheme = cycledAppearanceMode(after: preferredColorScheme)
-            } label: {
-                Image(systemName: appearanceModeSymbol(preferredColorScheme))
-            }
-            .buttonStyle(.borderless)
-            .help("切换显示模式")
-
-            Button {
-                openSettingsWindow()
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .buttonStyle(.borderless)
-            .help("设置")
         }
-        .font(.system(size: 15))
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(.bar)
     }
 
     @ViewBuilder

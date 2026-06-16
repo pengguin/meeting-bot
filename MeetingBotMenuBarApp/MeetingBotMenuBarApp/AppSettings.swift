@@ -41,6 +41,7 @@ enum AppAppearance {
 }
 
 enum AppPreferenceKeys {
+    static let appColorTheme = AppColorTheme.storageKey
     static let statusBarIconStyle = "statusBarIconStyle"
     static let statusBarIconColorMode = "statusBarIconColorMode"
 }
@@ -796,6 +797,7 @@ struct SettingsWindowView: View {
     @ObservedObject var templateStore: MeetingTemplateCatalogStore
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
     @AppStorage("preferredMainColorScheme") private var preferredMainColorScheme = "system"
+    @AppStorage(AppPreferenceKeys.appColorTheme) private var appColorTheme = AppColorTheme.green.rawValue
     @AppStorage(AppPreferenceKeys.statusBarIconStyle) private var statusBarIconStyle = StatusBarIconStyle.waveform.rawValue
     @AppStorage(AppPreferenceKeys.statusBarIconColorMode) private var statusBarIconColorMode = StatusBarIconColorMode.white.rawValue
     @AppStorage("showOverviewTab") private var showOverviewTab = false
@@ -835,6 +837,7 @@ struct SettingsWindowView: View {
         }
         .frame(minWidth: 760, minHeight: 500)
         .padding(18)
+        .tint(.brandAccent)
         .preferredColorScheme(AppAppearance.resolvedColorScheme(for: preferredMainColorScheme))
         .onAppear {
             configDraft = RuntimeConfigDraft(store: configStore)
@@ -843,6 +846,7 @@ struct SettingsWindowView: View {
         .onChange(of: preferredMainColorScheme) { _, newValue in
             AppAppearance.synchronizeWindows(for: newValue)
         }
+        .animation(.easeInOut(duration: 0.15), value: appColorTheme)
     }
 
     private var statusAndServiceTab: some View {
@@ -902,6 +906,14 @@ struct SettingsWindowView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .frame(maxWidth: 320, alignment: .leading)
+                }
+
+                settingsCard("配色方案") {
+                    colorThemePicker
+
+                    Text("影响主界面强调色、卡片顶栏、按钮选中态和设置页高亮。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 settingsCard("状态栏图标") {
@@ -1186,28 +1198,73 @@ struct SettingsWindowView: View {
                         Text(style.title)
                             .font(.caption)
                     }
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                    .foregroundStyle(isSelected ? Color.brandAccent : Color.primary)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
                     .frame(width: 112)
                     .background(
                         RoundedRectangle(cornerRadius: 8)
-                            .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+                            .fill(isSelected ? Color.brandAccentSoft : Color(nsColor: .controlBackgroundColor))
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(isSelected ? Color.accentColor.opacity(0.65) : Color(nsColor: .separatorColor))
+                            .stroke(isSelected ? Color.brandAccent.opacity(0.65) : Color(nsColor: .separatorColor))
                     )
                 }
                 .buttonStyle(.plain)
             }
         }
         .onAppear {
+            if AppColorTheme(rawValue: appColorTheme) == nil {
+                appColorTheme = AppColorTheme.green.rawValue
+            }
             if StatusBarIconStyle(rawValue: statusBarIconStyle) == nil {
                 statusBarIconStyle = StatusBarIconStyle.waveform.rawValue
             }
             if StatusBarIconColorMode(rawValue: statusBarIconColorMode) == nil {
                 statusBarIconColorMode = StatusBarIconColorMode.white.rawValue
+            }
+        }
+    }
+
+    private var colorThemePicker: some View {
+        HStack(spacing: 10) {
+            ForEach(AppColorTheme.allCases) { theme in
+                let isSelected = appColorTheme == theme.rawValue
+                Button {
+                    appColorTheme = theme.rawValue
+                } label: {
+                    HStack(spacing: 8) {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(theme.accentColor)
+                            .frame(width: 18, height: 18)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(Color(nsColor: .separatorColor).opacity(0.55))
+                            )
+
+                        Text(theme.title)
+                            .font(.callout.weight(.semibold))
+                    }
+                    .foregroundStyle(isSelected ? Color.brandAccent : Color.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(width: 86)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(isSelected ? theme.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(isSelected ? theme.accentColor.opacity(0.65) : Color(nsColor: .separatorColor))
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .onAppear {
+            if AppColorTheme(rawValue: appColorTheme) == nil {
+                appColorTheme = AppColorTheme.green.rawValue
             }
         }
     }

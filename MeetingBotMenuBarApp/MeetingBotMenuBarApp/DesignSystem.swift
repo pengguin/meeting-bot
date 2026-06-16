@@ -35,12 +35,62 @@ private func dynamicColor(
     return Color(nsColor: nsColor)
 }
 
+enum AppColorTheme: String, CaseIterable, Identifiable {
+    case blue
+    case green
+    case gray
+
+    static let storageKey = "appColorTheme"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .blue:
+            return "蓝"
+        case .green:
+            return "绿"
+        case .gray:
+            return "灰"
+        }
+    }
+
+    var accentColor: Color {
+        dynamicColor(light: lightAccent, dark: darkAccent)
+    }
+
+    private var lightAccent: (CGFloat, CGFloat, CGFloat) {
+        switch self {
+        case .blue:
+            return (25, 96, 166)
+        case .green:
+            return (15, 110, 86)
+        case .gray:
+            return (88, 94, 104)
+        }
+    }
+
+    private var darkAccent: (CGFloat, CGFloat, CGFloat) {
+        switch self {
+        case .blue:
+            return (74, 145, 222)
+        case .green:
+            return (29, 158, 117)
+        case .gray:
+            return (156, 164, 176)
+        }
+    }
+
+    static var current: AppColorTheme {
+        let rawValue = UserDefaults.standard.string(forKey: storageKey)
+            ?? AppColorTheme.green.rawValue
+        return AppColorTheme(rawValue: rawValue) ?? .green
+    }
+}
+
 extension Color {
-    // 品牌主强调色：青绿。明亮模式偏深沉稳，暗色模式提亮以保证对比度。
-    static let brandAccent = dynamicColor(
-        light: (15, 110, 86),
-        dark: (29, 158, 117)
-    )
+    // 品牌主强调色。明亮模式偏深沉稳，暗色模式提亮以保证对比度。
+    static var brandAccent: Color { AppColorTheme.current.accentColor }
 
     // 语义状态色，全局统一处理中/完成/错误的视觉。
     static let statusProcessing = dynamicColor(
