@@ -67,3 +67,9 @@ MeetingBotMenuBarApp/MeetingBotMenuBarApp.xcodeproj/project.xcworkspace/xcuserda
 .vscode/
 *.swp
 *.swo
+
+# Claude Code local state
+.claude/
+
+# Local collaboration progress notes (not for upstream)
+WORK_STATUS.md

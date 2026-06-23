@@ -487,6 +487,7 @@ private struct MeetingLibraryView: View {
     @State private var pendingMoveToNewFolderMeetingIDs: Set<String> = []
     @State private var folderPendingDeletion: LibraryFolder?
     @State private var folderPendingHardDeletion: LibraryFolder?
+    @State private var isShowingDraftErrorDetail = false
     @FocusState private var focusedNavigationColumn: NavigationColumn?
 
     private var currentColorTheme: AppColorTheme {
@@ -976,7 +977,9 @@ private struct MeetingLibraryView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         header(for: meeting)
-                        summary(for: meeting)
+                        if !meeting.isTemporary {
+                            summary(for: meeting)
+                        }
                         labelsEditor(for: meeting)
                         notesEditor(for: meeting)
                         speakerEditor(for: meeting)
@@ -988,6 +991,7 @@ private struct MeetingLibraryView: View {
             .background(Color(nsColor: .windowBackgroundColor))
             .task(id: meeting.sessionID) {
                 ensureDraft(for: meeting)
+                isShowingDraftErrorDetail = false
             }
         } else {
             ContentUnavailableView(
@@ -1056,10 +1060,64 @@ private struct MeetingLibraryView: View {
                     Label(meetingTypeDisplayName(for: meeting.meetingType), systemImage: "tag")
                 }
                 .menuStyle(.borderlessButton)
-                Label(meeting.version == "named" ? "实名版" : "匿名版", systemImage: "person.2")
+                Label(meeting.versionDisplayName, systemImage: meeting.isTemporary ? "hourglass" : "person.2")
             }
             .font(.callout)
             .foregroundStyle(.secondary)
+
+            if meeting.isTemporary {
+                let actionable = meeting.canRetryReport || meeting.canReprocessFromAudio
+                HStack(spacing: 10) {
+                    Label(
+                        meeting.processingMessage.isEmpty
+                            ? StageDisplay.name(for: meeting.processingStage)
+                            : meeting.processingMessage,
+                        systemImage: actionable ? "exclamationmark.triangle.fill" : "clock"
+                    )
+                    .foregroundStyle(actionable ? Color.statusError : Color.statusProcessing)
+
+                    if !meeting.processingErrorDetail.isEmpty {
+                        Button {
+                            isShowingDraftErrorDetail.toggle()
+                        } label: {
+                            Image(systemName: "info.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("查看详细错误")
+                        .popover(isPresented: $isShowingDraftErrorDetail, arrowEdge: .bottom) {
+                            ScrollView {
+                                Text(meeting.processingErrorDetail)
+                                    .font(.callout)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(12)
+                            }
+                            .frame(width: 380, height: 200)
+                        }
+                    }
+
+                    if meeting.canRetryReport {
+                        Button {
+                            retryReportGeneration(for: meeting)
+                        } label: {
+                            Label("重试生成纪要", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.regeneratingSessionIDs.contains(meeting.sessionID))
+                    }
+
+                    if meeting.canReprocessFromAudio {
+                        Button {
+                            store.reprocessLocalMeeting(meeting)
+                        } label: {
+                            Label("重新处理", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isCreatingLocalMeeting)
+                    }
+                }
+                .font(.callout)
+            }
 
             HStack(spacing: 10) {
                 if let actualMeetingDate = draft.actualMeetingDate {
@@ -1145,6 +1203,16 @@ private struct MeetingLibraryView: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    private func retryReportGeneration(for meeting: MeetingRecord) {
+        let templateID = meeting.requestedTemplateID?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        store.regenerateReport(
+            for: meeting,
+            templateID: templateID.isEmpty ? "general_meeting" : templateID,
+            version: "anonymous"
+        )
     }
 
     private func summary(for meeting: MeetingRecord) -> some View {
@@ -1544,6 +1612,18 @@ private struct MeetingLibraryView: View {
     private func meetingContextMenu(for meeting: MeetingRecord) -> some View {
         Button("打开文件夹") {
             FileOpener.open(meeting.sessionURL)
+        }
+        if meeting.canRetryReport {
+            Button("重试生成纪要") {
+                retryReportGeneration(for: meeting)
+            }
+            .disabled(store.regeneratingSessionIDs.contains(meeting.sessionID))
+        }
+        if meeting.canReprocessFromAudio {
+            Button("重新处理") {
+                store.reprocessLocalMeeting(meeting)
+            }
+            .disabled(store.isCreatingLocalMeeting)
         }
         Menu("打开文件") {
             meetingFileMenuItem("HTML", url: meeting.latestHTMLURL, format: "html", meeting: meeting)
@@ -2601,6 +2681,24 @@ private struct MeetingListRow: View {
             || meeting.latestMDURL != nil
     }
 
+    private var isActionableDraft: Bool {
+        meeting.isTemporary && (meeting.canRetryReport || meeting.canReprocessFromAudio)
+    }
+
+    private func statusDotColor(accentColor: Color) -> Color {
+        if meeting.isTemporary {
+            return isActionableDraft ? Color.statusError : Color.statusProcessing
+        }
+        return hasGeneratedOutput ? accentColor : Color(nsColor: .tertiaryLabelColor)
+    }
+
+    private var statusDotHelp: String {
+        if meeting.isTemporary {
+            return isActionableDraft ? "处理未完成，可重试" : "处理中"
+        }
+        return hasGeneratedOutput ? "已生成纪要" : "尚未生成纪要"
+    }
+
     var body: some View {
         let accentColor = colorTheme.accentColor
 
@@ -2644,9 +2742,9 @@ private struct MeetingListRow: View {
             Spacer(minLength: 6)
 
             Circle()
-                .fill(hasGeneratedOutput ? accentColor : Color(nsColor: .tertiaryLabelColor))
+                .fill(statusDotColor(accentColor: accentColor))
                 .frame(width: 7, height: 7)
-                .help(hasGeneratedOutput ? "已生成纪要" : "尚未生成纪要")
+                .help(statusDotHelp)
         }
         .padding(.horizontal, Spacing.sm)
         .padding(.vertical, Spacing.sm)
