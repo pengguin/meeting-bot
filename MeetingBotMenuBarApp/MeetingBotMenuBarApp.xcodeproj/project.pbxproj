@@ -222,8 +222,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "会议纪要助手";
 				INFOPLIST_KEY_CFBundleIconFile = AppIcon;
-				INFOPLIST_KEY_CFBundleShortVersionString = 0.3.1;
-				INFOPLIST_KEY_CFBundleVersion = 29;
+				INFOPLIST_KEY_CFBundleShortVersionString = 0.3.2;
+				INFOPLIST_KEY_CFBundleVersion = 30;
 				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -245,8 +245,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "会议纪要助手";
 				INFOPLIST_KEY_CFBundleIconFile = AppIcon;
-				INFOPLIST_KEY_CFBundleShortVersionString = 0.3.1;
-				INFOPLIST_KEY_CFBundleVersion = 29;
+				INFOPLIST_KEY_CFBundleShortVersionString = 0.3.2;
+				INFOPLIST_KEY_CFBundleVersion = 30;
 				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
