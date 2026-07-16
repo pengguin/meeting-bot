@@ -1632,7 +1632,7 @@ event_handler = (
 
 
 def main() -> None:
-    write_idle_runtime_status_if_no_active_task()
+    RUNTIME_STATUS.write_idle_if_no_active_task()
     print("[Bot] 启动飞书长连接机器人")
     print("[Bot] 请确认：")
     print("1. 飞书应用已发布")

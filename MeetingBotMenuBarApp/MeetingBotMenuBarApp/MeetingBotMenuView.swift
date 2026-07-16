@@ -209,6 +209,10 @@ struct MeetingBotMenuView: View {
             return errorMessage
         }
 
+        if store.launchStatus == .stopped || store.launchStatus == .missing {
+            return "机器人后台服务已停止"
+        }
+
         if let message = store.runtimeStatus?.message, !message.isEmpty {
             return message
         }
@@ -219,6 +223,10 @@ struct MeetingBotMenuView: View {
     private var runtimeMessageColor: Color {
         if let errorMessage = store.visibleErrorMessage, !errorMessage.isEmpty {
             return .red
+        }
+
+        if store.launchStatus == .stopped || store.launchStatus == .missing {
+            return .orange
         }
 
         return .secondary
