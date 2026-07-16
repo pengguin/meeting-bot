@@ -23,6 +23,13 @@ struct MeetingRecord: Identifiable, Equatable {
     let transcriptURL: URL?
     let transcriptSegmentsURL: URL?
     let audioURL: URL?
+    let isTemporary: Bool
+    let processingStage: String
+    let processingMessage: String
+    let processingErrorDetail: String
+    let canRetryReport: Bool
+    let canReprocessFromAudio: Bool
+    let requestedTemplateID: String?
 
     var createdAtDisplay: String {
         guard let createdAt else {
@@ -43,6 +50,17 @@ struct MeetingRecord: Identifiable, Equatable {
         ]
         .joined(separator: "\n")
         .lowercased()
+    }
+
+    var versionDisplayName: String {
+        if isTemporary {
+            return canRetryReport ? "待生成纪要" : "处理中"
+        }
+        return version == "named" ? "实名版" : "匿名版"
+    }
+
+    var titleDisplayName: String {
+        title.isEmpty ? sessionID : title
     }
 }
 
@@ -240,6 +258,26 @@ private struct MeetingReportSnapshot: Decodable {
 
 private struct DiscussionTopicSnapshot: Decodable {
     let title: String?
+}
+
+private struct LocalMeetingStateSnapshot: Decodable {
+    let taskStatus: String?
+    let stage: String?
+    let message: String?
+    let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case taskStatus = "task_status"
+        case stage
+        case message
+        case updatedAt = "updated_at"
+    }
+}
+
+private struct LocalMeetingRequestSnapshot: Decodable {
+    let title: String?
+    let template: String?
+    let formats: [String]?
 }
 
 final class MeetingLibraryStore: ObservableObject {
@@ -1148,8 +1186,33 @@ final class MeetingLibraryStore: ObservableObject {
         )
     }
 
+    /// 把"有录音但还没转录稿"的中断/失败草稿，**在原会话目录里原地重跑**整条流水线：
+    /// 复用目录中保存的原始录音重新转写、分离、生成纪要。会话目录与 session_id 不变，
+    /// 这条草稿直接从"中断"变回"处理中"，不产生第二条草稿、不复制/移动录音，零丢失风险。
+    func reprocessLocalMeeting(_ meeting: MeetingRecord) {
+        guard !isCreatingLocalMeeting else {
+            return
+        }
+        guard let audioURL = meeting.audioURL, AppPaths.exists(audioURL) else {
+            localMeetingCreationError = "草稿缺少可重新处理的录音文件"
+            return
+        }
+
+        let templateID = meeting.requestedTemplateID?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let request = LocalMeetingCreationRequest(
+            title: meeting.title,
+            audioURL: audioURL,
+            transcriptURL: nil,
+            templateID: templateID.isEmpty ? "auto" : templateID,
+            exportFormats: ["html", "docx"]
+        )
+        createLocalMeeting(request: request, reuseSessionURL: meeting.sessionURL)
+    }
+
     func createLocalMeeting(
         request: LocalMeetingCreationRequest,
+        reuseSessionURL: URL? = nil,
         completion: @escaping (LocalMeetingCreationResult?) -> Void = { _ in }
     ) {
         guard !isCreatingLocalMeeting else {
@@ -1178,6 +1241,9 @@ final class MeetingLibraryStore: ObservableObject {
             "--formats",
             request.exportFormats.sorted().joined(separator: ","),
         ]
+        if let reuseSessionURL {
+            arguments.append(contentsOf: ["--session", reuseSessionURL.path])
+        }
         if let audioURL = request.audioURL {
             arguments.append(contentsOf: ["--audio", audioURL.path])
         }
@@ -1255,6 +1321,8 @@ final class MeetingLibraryStore: ObservableObject {
                     self.localMeetingCreationMessage = ""
                     self.localMeetingCreationError = nil
                     self.writeIdleRuntimeStatus()
+                    // 中止会删除半成品会话目录，刷新库移除残留的草稿条目。
+                    self.reload(forceScan: true)
                     completion(nil)
                 } else if process.terminationStatus == 0,
                    let result = self.decodeLocalMeetingCreationResult(from: trimmedStdout) {
@@ -1270,6 +1338,12 @@ final class MeetingLibraryStore: ObservableObject {
                         stderr: trimmedStderr,
                         fallback: "新增会议失败"
                     )
+                    // 非中止失败：会话目录作为草稿保留，刷新并选中它以露出「重试生成纪要」。
+                    self.reload(forceScan: true)
+                    if let sessionID = self.currentRuntimeStatusPayload()?["session_id"] as? String,
+                       !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.selectMeeting(sessionID: sessionID)
+                    }
                     completion(nil)
                 }
             }
@@ -1325,6 +1399,15 @@ final class MeetingLibraryStore: ObservableObject {
         if let message = progress["message"] as? String, !message.isEmpty {
             localMeetingCreationMessage = message
         }
+        // 后端在会话目录创建后会带上 session_id：刷新库以展示草稿会议，
+        // 并在新增过程中跟随选中该草稿，让用户看到实时处理阶段。
+        if let sessionID = progress["session_id"] as? String,
+           !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            reload(forceScan: true)
+            if isCreatingLocalMeeting || selectedMeetingID == nil || selectedMeetingID == sessionID {
+                selectMeeting(sessionID: sessionID)
+            }
+        }
     }
 
     private func currentRuntimeStatusPayload() -> [String: Any]? {
@@ -1334,6 +1417,26 @@ final class MeetingLibraryStore: ObservableObject {
             return nil
         }
         return payload
+    }
+
+    /// 通过非阻塞抢 `runtime/local_meeting.lock` 判断是否真的有新增会议进程在运行：
+    /// 成功抢到说明当前无人持锁（随即释放）；`EWOULDBLOCK` 说明确有进程持锁。
+    /// 进程崩溃/被杀时 OS 会自动释放 flock，因此"锁空闲"是判定陈旧 processing 草稿的可靠信号。
+    private func isLocalMeetingProcessActive() -> Bool {
+        let lockURL = AppPaths.projectRoot.appendingPathComponent("runtime/local_meeting.lock")
+        guard AppPaths.exists(lockURL) else {
+            return false
+        }
+        let fd = open(lockURL.path, O_RDONLY)
+        guard fd >= 0 else {
+            return false
+        }
+        defer { close(fd) }
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+            flock(fd, LOCK_UN)
+            return false
+        }
+        return errno == EWOULDBLOCK
     }
 
     /// 中止后若 SIGKILL 抢在脚本自身清理之前，半成品会话目录会残留；
@@ -1497,8 +1600,10 @@ final class MeetingLibraryStore: ObservableObject {
                 (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
             }
 
+            // 整次扫描只探测一次锁状态：用于识别陈旧 processing 草稿（进程已退出但状态未落定）。
+            let localMeetingProcessActive = isLocalMeetingProcessActive()
             return sessionURLs
-                .compactMap(loadMeetingRecord)
+                .compactMap { loadMeetingRecord(from: $0, localMeetingProcessActive: localMeetingProcessActive) }
                 .sorted { lhs, rhs in
                     let lhsDate = lhs.createdAt ?? .distantPast
                     let rhsDate = rhs.createdAt ?? .distantPast
@@ -1531,16 +1636,12 @@ final class MeetingLibraryStore: ObservableObject {
             .contentModificationDate
     }
 
-    private func loadMeetingRecord(from sessionURL: URL) -> MeetingRecord? {
+    private func loadMeetingRecord(from sessionURL: URL, localMeetingProcessActive: Bool) -> MeetingRecord? {
         let sessionID = sessionURL.lastPathComponent
         let reportURL = preferredFile(
             in: sessionURL,
             matching: ["report_named.json", "report_anon.json"]
         )
-        guard let reportURL,
-              let report = decodeReport(at: reportURL) else {
-            return nil
-        }
 
         let transcriptURL = preferredFile(
             in: sessionURL,
@@ -1550,19 +1651,103 @@ final class MeetingLibraryStore: ObservableObject {
             .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
         let speakerMapURL = sessionURL.appendingPathComponent("speaker_map.json")
         let detectedSpeakers = loadSpeakerIDs(from: speakerMapURL)
+        let transcriptSegmentsURL = preferredFile(
+            in: sessionURL,
+            matching: ["transcript_with_speaker_raw.json"]
+        )
+        let audioURL = preferredAudioFile(in: sessionURL)
+
+        if let reportURL,
+           let report = decodeReport(at: reportURL) {
+            return MeetingRecord(
+                id: sessionID,
+                sessionID: sessionID,
+                sessionURL: sessionURL,
+                title: report.reportTitle ?? sessionID,
+                meetingType: report.meetingType ?? "unknown",
+                version: report.version ?? "anonymous",
+                takeaway: report.oneSentenceTakeaway ?? "",
+                summary: report.executiveSummary ?? "",
+                topics: (report.discussionTopics ?? [])
+                    .compactMap(\.title)
+                    .filter { !$0.isEmpty },
+                transcript: transcript,
+                detectedSpeakers: detectedSpeakers,
+                createdAt: DateDisplay.sessionDate(from: sessionID),
+                latestPDFURL: latestFile(in: sessionURL, pathExtension: "pdf"),
+                latestDOCXURL: latestFile(in: sessionURL, pathExtension: "docx"),
+                latestHTMLURL: latestFile(in: sessionURL, pathExtension: "html"),
+                latestMDURL: latestMarkdownSummary(in: sessionURL),
+                transcriptURL: transcriptURL,
+                transcriptSegmentsURL: transcriptSegmentsURL,
+                audioURL: audioURL,
+                isTemporary: false,
+                processingStage: "",
+                processingMessage: "",
+                processingErrorDetail: "",
+                canRetryReport: false,
+                canReprocessFromAudio: false,
+                requestedTemplateID: nil
+            )
+        }
+
+        // 没有完整 report：尝试作为「草稿会议」识别（处理中或纪要生成失败）。
+        let state = decodeLocalMeetingState(in: sessionURL)
+        let request = decodeLocalMeetingRequest(in: sessionURL)
+        guard state != nil || request != nil || transcriptURL != nil else {
+            return nil
+        }
+
+        let requestedTitle = request?.title?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sourceName = (try? String(
+            contentsOf: sessionURL.appendingPathComponent("source_name.txt"),
+            encoding: .utf8
+        ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sourceMetadata = decodeJSONObject(at: sessionURL.appendingPathComponent("source_metadata.json"))
+        let metadataSourceName = (sourceMetadata["source_name"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let classification = decodeJSONObject(at: sessionURL.appendingPathComponent("classification.json"))
+        let classifiedTemplate = (classification["template"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawTaskStatus = state?.taskStatus
+        // 进程已退出（锁空闲）但状态仍停在 processing → 视为陈旧（崩溃/被杀），可重试/重处理。
+        let isStaleProcessing = rawTaskStatus == "processing" && !localMeetingProcessActive
+        let isError = rawTaskStatus == "error"
+        let isNotRunning = isError || rawTaskStatus == nil || isStaleProcessing
+        let stage = state?.stage ?? "pending"
+        let baseMessage = state?.message
+            ?? (transcriptURL == nil ? "正在准备会议材料" : "转录稿已生成，等待生成纪要")
+        // 失败时只显示简短摘要，完整报错放进可点开的详情；陈旧中断给中性提示。
+        let errorDetail = isError ? baseMessage : ""
+        let displayMessage: String
+        if isError {
+            displayMessage = "新增会议失败"
+        } else if isStaleProcessing {
+            displayMessage = "处理似乎已中断"
+        } else {
+            displayMessage = baseMessage
+        }
+        let requestedTemplate = request?.template ?? ""
+        let effectiveTemplateID = requestedTemplate == "auto" || requestedTemplate.isEmpty
+            ? (classifiedTemplate.isEmpty ? "general_meeting" : classifiedTemplate)
+            : requestedTemplate
+        // 有转录稿 → 可只重试"生成纪要"；无转录稿但有录音 → 需从头重跑整条流水线。
+        let canRetry = transcriptURL != nil && isNotRunning
+        let canReprocess = transcriptURL == nil && audioURL != nil && isNotRunning
 
         return MeetingRecord(
             id: sessionID,
             sessionID: sessionID,
             sessionURL: sessionURL,
-            title: report.reportTitle ?? sessionID,
-            meetingType: report.meetingType ?? "unknown",
-            version: report.version ?? "anonymous",
-            takeaway: report.oneSentenceTakeaway ?? "",
-            summary: report.executiveSummary ?? "",
-            topics: (report.discussionTopics ?? [])
-                .compactMap(\.title)
-                .filter { !$0.isEmpty },
+            title: requestedTitle.isEmpty
+                ? (metadataSourceName.isEmpty ? (sourceName.isEmpty ? sessionID : sourceName) : metadataSourceName)
+                : requestedTitle,
+            meetingType: requestedTemplate == "auto" && classifiedTemplate.isEmpty ? "unknown" : effectiveTemplateID,
+            version: "draft",
+            takeaway: "",
+            summary: "",
+            topics: [],
             transcript: transcript,
             detectedSpeakers: detectedSpeakers,
             createdAt: DateDisplay.sessionDate(from: sessionID),
@@ -1570,16 +1755,40 @@ final class MeetingLibraryStore: ObservableObject {
             latestDOCXURL: latestFile(in: sessionURL, pathExtension: "docx"),
             latestHTMLURL: latestFile(in: sessionURL, pathExtension: "html"),
             latestMDURL: latestMarkdownSummary(in: sessionURL),
-            transcriptURL: preferredFile(
-                in: sessionURL,
-                matching: ["transcript_named.md", "transcript_anon.md"]
-            ),
-            transcriptSegmentsURL: preferredFile(
-                in: sessionURL,
-                matching: ["transcript_with_speaker_raw.json"]
-            ),
-            audioURL: preferredAudioFile(in: sessionURL)
+            transcriptURL: transcriptURL,
+            transcriptSegmentsURL: transcriptSegmentsURL,
+            audioURL: audioURL,
+            isTemporary: true,
+            processingStage: stage,
+            processingMessage: displayMessage,
+            processingErrorDetail: errorDetail,
+            canRetryReport: canRetry,
+            canReprocessFromAudio: canReprocess,
+            requestedTemplateID: effectiveTemplateID
         )
+    }
+
+    private func decodeLocalMeetingState(in sessionURL: URL) -> LocalMeetingStateSnapshot? {
+        decodeJSON(LocalMeetingStateSnapshot.self, at: sessionURL.appendingPathComponent("local_meeting_state.json"))
+    }
+
+    private func decodeLocalMeetingRequest(in sessionURL: URL) -> LocalMeetingRequestSnapshot? {
+        decodeJSON(LocalMeetingRequestSnapshot.self, at: sessionURL.appendingPathComponent("local_meeting_request.json"))
+    }
+
+    private func decodeJSON<T: Decodable>(_ type: T.Type, at url: URL) -> T? {
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private func decodeJSONObject(at url: URL) -> [String: Any] {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return object
     }
 
     private func decodeReport(at url: URL) -> MeetingReportSnapshot? {

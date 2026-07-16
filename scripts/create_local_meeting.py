@@ -22,6 +22,7 @@ os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
 from chinese_text import simplify_chinese
+from local_meeting_drafts import write_local_meeting_request, write_local_meeting_state
 from asr_runtime import asr_runtime_description, create_asr_model, transcribe_with_asr_model
 from diarization_runtime import configure_diarization_pipeline, run_diarization_pipeline
 from meetingbot_config import (
@@ -76,10 +77,20 @@ def runtime_timestamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def emit_progress(stage: str, message: str) -> None:
+def emit_progress(stage: str, message: str, session_path: Optional[Path] = None) -> None:
     try:
         print(
-            json.dumps({"progress": {"stage": stage, "message": message}}, ensure_ascii=False),
+            json.dumps(
+                {
+                    "progress": {
+                        "stage": stage,
+                        "message": message,
+                        "session_id": session_path.name if session_path else "",
+                        "session_dir": str(session_path) if session_path else "",
+                    }
+                },
+                ensure_ascii=False,
+            ),
             flush=True,
         )
     except OSError:
@@ -115,7 +126,10 @@ def write_runtime_status(
     tmp_path = RUNTIME_DIR / f".status_{uuid.uuid4().hex}.json.tmp"
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(RUNTIME_STATUS_FILE)
-    emit_progress(stage, message)
+    # 把状态也写到会话目录，作为草稿会议的状态快照（供前端识别草稿、判断能否重试）。
+    if session_path is not None:
+        write_local_meeting_state(session_path, payload)
+    emit_progress(stage, message, session_path)
 
 
 def write_meeting_done_event(
@@ -436,19 +450,28 @@ def create_session_from_transcript(
     return session_path, transcript_markdown, speaker_map
 
 
-def create_session_from_audio(title: str, audio_path: Path) -> tuple[Path, str, Dict[str, str]]:
+def create_session_from_audio(
+    title: str,
+    audio_path: Path,
+    session_path: Optional[Path] = None,
+) -> tuple[Path, str, Dict[str, str]]:
     from pyannote.audio import Pipeline
 
-    session_path = create_session(audio_path)
-    write_session_metadata(
-        session_path,
-        {
-            "source_kind": "local_audio",
-            "source_name": audio_path.name,
-            "created_at": runtime_timestamp(),
-        },
-    )
-    session_audio = session_path / audio_path.name
+    if session_path is None:
+        session_path = create_session(audio_path)
+        write_session_metadata(
+            session_path,
+            {
+                "source_kind": "local_audio",
+                "source_name": audio_path.name,
+                "created_at": runtime_timestamp(),
+            },
+        )
+        session_audio = session_path / audio_path.name
+    else:
+        # 草稿「重新处理」：复用已有会话目录及其中的原始录音，原地重跑整条流水线，
+        # 不新建会话目录、不复制录音，避免产生第二条草稿或丢失录音。
+        session_audio = audio_path
     write_runtime_status("processing", "converting_audio", "正在转换音频", session_path)
     analysis_audio = convert_audio_to_wav_16k_mono(session_audio, session_path)
 
@@ -604,10 +627,13 @@ def main() -> None:
     parser.add_argument("--transcript", default="")
     parser.add_argument("--template", default="auto")
     parser.add_argument("--formats", default="html,docx")
+    # 草稿「重新处理」：复用已有会话目录原地重跑（仅录音流程使用）。
+    parser.add_argument("--session", default="")
     args = parser.parse_args()
 
     audio_path = Path(args.audio).expanduser() if args.audio else None
     transcript_path = Path(args.transcript).expanduser() if args.transcript else None
+    reuse_session = Path(args.session).expanduser() if args.session else None
     formats = {item.strip().lower() for item in args.formats.split(",") if item.strip()}
 
     if transcript_path is None and audio_path is None:
@@ -616,6 +642,8 @@ def main() -> None:
         raise RuntimeError("转录稿文件不存在")
     if audio_path is not None and not audio_path.exists():
         raise RuntimeError("录音文件不存在")
+    if reuse_session is not None and not reuse_session.is_dir():
+        raise RuntimeError("待重新处理的会话目录不存在")
 
     lock_handle = acquire_local_meeting_lock()
     session_path: Optional[Path] = None
@@ -633,7 +661,11 @@ def main() -> None:
             session_path, transcript_markdown, speaker_map = create_session_from_audio(
                 args.title,
                 audio_path,
+                reuse_session,
             )
+        # 转录稿已就绪、生成纪要之前落盘请求参数：若后续生成纪要失败，
+        # 会话会作为草稿保留，可凭此参数复用转录稿重试。
+        write_local_meeting_request(session_path, args.title, args.template, formats)
         result = generate_outputs(
             title=args.title,
             transcript_markdown=transcript_markdown,
