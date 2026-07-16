@@ -4,8 +4,8 @@ set -euo pipefail
 APP_NAME="会议纪要助手"
 EXECUTABLE_NAME="FeishuMeetingBot"
 BUNDLE_ID="com.pgui.FeishuMeetingBotMenuBar"
-APP_VERSION="0.4.0"
-BUILD_NUMBER="31"
+APP_VERSION="0.5.0"
+BUILD_NUMBER="32"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -102,6 +102,34 @@ rsync -a \
   --exclude "dist" \
   "$PROJECT_ROOT/" "$BOOTSTRAP_PAYLOAD_DIR/"
 printf '%s\n' "$PAYLOAD_VERSION" > "$RESOURCES_DIR/payload-version.txt"
+touch "$BOOTSTRAP_PAYLOAD_DIR/.meetingbot-packaged-payload"
+
+RELEASE_SIGNING_KEY="${MEETINGBOT_RELEASE_SIGNING_KEY:-}"
+RELEASE_PUBLIC_KEY="${MEETINGBOT_RELEASE_PUBLIC_KEY:-}"
+if [[ -n "$RELEASE_SIGNING_KEY" || -n "$RELEASE_PUBLIC_KEY" ]]; then
+  [[ -n "$RELEASE_SIGNING_KEY" && -n "$RELEASE_PUBLIC_KEY" ]] || {
+    echo "启用独立发布签名时必须同时配置 MEETINGBOT_RELEASE_SIGNING_KEY 和 MEETINGBOT_RELEASE_PUBLIC_KEY" >&2
+    exit 1
+  }
+  [[ -f "$RELEASE_SIGNING_KEY" ]] || {
+    echo "发布私钥不存在：$RELEASE_SIGNING_KEY" >&2
+    exit 1
+  }
+  [[ -f "$RELEASE_PUBLIC_KEY" ]] || {
+    echo "发布公钥不存在：$RELEASE_PUBLIC_KEY" >&2
+    exit 1
+  }
+  cp "$RELEASE_PUBLIC_KEY" "$BOOTSTRAP_PAYLOAD_DIR/release-public-key.pem"
+fi
+
+python3 "$PROJECT_ROOT/scripts/generate_release_manifest.py" payload \
+  --root "$BOOTSTRAP_PAYLOAD_DIR" \
+  --output "$BOOTSTRAP_PAYLOAD_DIR/release-manifest.json" \
+  --checksums "$BOOTSTRAP_PAYLOAD_DIR/payload-files.sha256" \
+  --signature "$BOOTSTRAP_PAYLOAD_DIR/release-manifest.sig" \
+  --app-version "$APP_VERSION" \
+  --build-number "$BUILD_NUMBER" \
+  --payload-version "$PAYLOAD_VERSION"
 
 if command -v codesign >/dev/null 2>&1; then
 codesign --force --sign - "$APP_BUNDLE"

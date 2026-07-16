@@ -5,6 +5,9 @@
 ## 组成
 
 - `bot.py`：飞书机器人后台入口。
+- `feishu_io.py`：飞书凭据缓存、消息读取、资源下载、文件上传和回复。
+- `audio_pipeline.py`：音频转换、ASR/说话人模型生命周期、转写和分离流水线。
+- `runtime_status.py`：运行状态与会议完成事件的原子持久化。
 - `asr_runtime.py`：faster-whisper 模型、线程、批量转写和解码参数的统一入口。
 - `diarization_runtime.py`：说话人分离设备选择及 Apple GPU/CPU 回退逻辑。
 - `transcription_progress.py`：语音转写百分比和已处理时长计算。
@@ -13,7 +16,7 @@
 - `MeetingBotMenuBarApp/`：macOS 菜单栏 App，用于安装、状态查看、服务控制和会议库管理。
 - `scripts/`：安装、自检、本地新增会议、重生成和补导出文件脚本。
 - `schemas/`：会议分类和会议报告的结构化输出 schema。
-- `docs/`：安装、升级、使用说明和更新记录。
+- `docs/`：安装、升级、使用说明、更新记录和开发路线图。
 - `tests/`：核心导出、会话复用、转录材料解析、转写进度、说话人显示和 LLM 后端测试。
 
 ## 隐私边界
@@ -72,7 +75,7 @@ LLM_MODEL=           # openai 兼容服务必填；本地服务可留空自动�
 python3 -m pip install -r requirements-dev.txt
 python3 -m pytest tests -q
 bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhouse.sh scripts/doctor.sh scripts/install_optional_tools.sh scripts/preflight.sh scripts/upgrade.sh start_bot.sh
-python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
+python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py scripts/generate_release_manifest.py bot.py feishu_io.py audio_pipeline.py runtime_status.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
 ```
 
 ## 发布
@@ -83,6 +86,8 @@ python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session
 bash MeetingBotMenuBarApp/build_release_app.sh
 bash scripts/build_setup_package.sh
 ```
+
+构建 App 时会在载荷内生成逐文件 SHA-256 清单；构建安装盘后会生成同版本的 `release-manifest-<version>.json`。正式发布环境可通过 `MEETINGBOT_RELEASE_SIGNING_KEY` 和 `MEETINGBOT_RELEASE_PUBLIC_KEY` 附加 ECDSA P-256/SHA-256 签名。当前开发路线见 `docs/DEVELOPMENT_ROADMAP.md`。
 
 ## 协作方式
 

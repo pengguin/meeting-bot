@@ -1,6 +1,6 @@
 # 会议纪要助手 线程交接总结
 
-生成时间：2026-05-18（2026-07-16 更新至 0.4.0 可续跑流程与事务式安装）
+生成时间：2026-05-18（2026-07-16 更新至 0.5.0 模块化、增量索引与发布完整性）
 
 本文档用于帮助新线程中的 agent 快速理解本轮开发上下文、已完成工作、关键文件和后续开发入口。
 
@@ -24,9 +24,9 @@
 
 ## 本轮主要工作
 
-### 当前主线状态（2026-07-16 / 0.4.0 build 31）
+### 当前主线状态（2026-07-16 / 0.5.0 build 32）
 
-本地 `main` 已以 UI 分支为后续主线，并在此基础上合并原定 0.3.3 与 0.4 的开发事项，直接发布 0.4.0。旧主线基线 `3303606` 仅作为历史远端分支保留，不再作为后续开发入口。
+本地 `main` 已以 UI 分支为后续主线，0.4.0 完成可续跑流程与事务式安装，0.5.0 按路线图完成核心模块拆分、会议库后台增量索引与发布完整性链路。旧主线基线 `3303606` 仅作为历史远端分支保留，不再作为后续开发入口。
 
 当前主线已包含以下能力和约定：
 
@@ -37,13 +37,16 @@
 - 说话人分离和语音转写均有实时进度；Apple Silicon 说话人分离优先 MPS，不兼容步骤回退 CPU。
 - 说话人显示统一为 `SPEAKER_00 -> 说话人1`、`UNKNOWN -> 未知说话人`；保存真实姓名后会同步重生成转录稿、会议纪要和已有导出文件。
 - 原始转录音频拖动改为预览时间、松手后一次性跳转，降低长音频播放进度条卡顿。
-- 发布脚本 `MeetingBotMenuBarApp/build_release_app.sh` 当前版本为 `0.4.0`、构建号 `31`；Xcode 与安装盘脚本版本已同步。
+- 发布脚本 `MeetingBotMenuBarApp/build_release_app.sh` 当前版本为 `0.5.0`、构建号 `32`；Xcode、升级脚本与安装盘脚本版本已同步。
 - `0.3.1` 修复会议库配色实时联动：列表图标、选中背景、标签、日期筛选、原始转录活动段落和会议条目右侧“已生成纪要”状态圆点均跟随设置页蓝 / 绿 / 灰配色刷新。
 - `0.3.2` 在本地新增会议非主动中止失败时保留草稿：已有转录稿可重试生成纪要，只有原始录音可在原会话目录重新处理；崩溃遗留的处理中草稿会通过任务锁恢复为可操作状态。
 - `0.4.0` 将草稿扩展为阶段检查点流程：暂停、崩溃或 App 重开后复用已完成的音频预处理、说话人分离、转写、对齐、分类和纪要产物；纪要失败可沿用原格式重试。
 - LLM 输出增加结构校验、原子写入、有限重试和登录 / 额度 / 限流 / 网络 / 格式错误分类；转录结果不会因纪要后端失败而删除。
 - 飞书后台使用有上限任务队列、跨重启消息去重、按需加载模型、访问凭据缓存和下载大小限制，降低空闲资源与失控并发风险。
 - 敏感凭据迁入 macOS 系统钥匙串；升级对代码、Python 环境和 App 分别备份，失败时自动恢复并保留会议数据。
+- `0.5.0` 将飞书 I/O、音频流水线和运行状态迁出 `bot.py`，并以集成测试覆盖消息引用、流式下载、模型复用、进度回调和状态原子写入。
+- 会议库扫描已迁入 Swift actor，使用会话目录指纹缓存未变化记录；扫描时主界面保持可操作，并合并重复刷新请求。
+- App 内载荷包含逐文件 SHA-256 清单；安装器在备份或覆盖旧版前校验。安装盘构建后生成机器可读发布清单，并预留 ECDSA P-256/SHA-256 签名入口。
 - 开发测试依赖新增 `requirements-dev.txt`；App 虚拟环境中已安装 pytest，`tests/` 目前覆盖 ASR 参数、中文简体转换、说话人分离 MPS 回退、说话人显示同步、转写进度和 LLM 后端。
 
 本轮新增或纳入提交的测试文件：
@@ -56,6 +59,10 @@
 - `tests/test_local_meeting_drafts.py`
 - `tests/test_llm_backend.py`
 - `tests/test_task_runtime.py`
+- `tests/test_feishu_io.py`
+- `tests/test_audio_pipeline.py`
+- `tests/test_runtime_status.py`
+- `tests/test_release_manifest.py`
 
 ### 0.2.14 修订轮次
 
@@ -167,25 +174,24 @@
 
 ### 3. Python 代码拆分
 
-原 `bot.py` 曾约 3467 行，维护成本较高。本轮做了第一阶段拆分：
+原 `bot.py` 曾约 3467 行，维护成本较高。0.5.0 完成第二阶段拆分：
 
 - `meetingbot_config.py`：集中配置、路径、模板常量。
 - `report_export.py`：集中 DOCX、Markdown、HTML、PDF 导出逻辑。
-- `bot.py`：保留飞书交互、ASR、说话人分离、任务主流程、状态写入、发送文件等协调逻辑。
+- `feishu_io.py`：集中飞书凭据缓存、引用消息解析、流式下载、上传和回复。
+- `audio_pipeline.py`：集中 ffmpeg 转换、模型按需加载、说话人分离、ASR 与进度回调。
+- `runtime_status.py`：集中状态文件、完成事件和陈旧任务恢复的原子写入。
+- `bot.py`：保留消息路由、会议业务编排、分类、纪要和导出协调逻辑。
 
 当前行数大致为：
 
-- `bot.py`：进一步缩减，当前主要保留飞书交互和主流程编排。
+- `bot.py`：约 1660 行，当前主要保留消息路由和主流程编排。
 - `report_export.py`：约 1186 行。
 - `meetingbot_config.py`：约 61 行。
 - `session_store.py`：集中 session 创建、复用、hash 和文本读取。
 - `transcript_material.py`：集中上传文本规范化和文本段落解析。
 
-后续仍可继续拆分：
-
-- `feishu_client.py`：飞书下载、上传、回复、引用消息解析。
-- `audio_pipeline.py`：音频转换、pyannote、faster-whisper、说话人对齐。
-- `runtime_status.py`：runtime/status 和 runtime/events 写入。
+后续拆分与任务调度计划统一记录在 `docs/DEVELOPMENT_ROADMAP.md`，不再在交接文档维护重复清单。
 
 ### 4. 菜单栏 App 优化
 
@@ -406,26 +412,29 @@
 - `docs/SHARE_CHECKLIST.md`
 - `docs/DEPENDENCIES.md`
 - `docs/后台待办_安装与会议生成.md`
+- `docs/DEVELOPMENT_ROADMAP.md`
 - `scripts/install.sh`
 - `scripts/build_setup_package.sh`
 
 ### 打包产物
 
 - `dist/会议纪要助手.app`
-- 默认安装盘路径：`dist/会议纪要助手 0.4.0 安装盘.dmg`
-- 默认线程交接导出路径：`dist/线程交接汇总 0.4.0.md`
+- 默认安装盘路径：`dist/会议纪要助手 0.5.0 安装盘.dmg`
+- 默认线程交接导出路径：`dist/线程交接汇总 0.5.0.md`
+- 发布元数据路径：`dist/release-manifest-0.5.0.json`
 
 ## 已执行验证
 
-2026-07-16 / 0.4.0 主线执行过以下检查：
+2026-07-16 / 0.5.0 主线执行以下检查：
 
 ```bash
 "$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m pytest --version
 "$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m pytest tests -q
 bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhouse.sh scripts/doctor.sh scripts/install_optional_tools.sh scripts/preflight.sh scripts/upgrade.sh start_bot.sh
 PYTHON_BIN="$HOME/Library/Application Support/meeting-bot/.venv/bin/python" ENV_FILE=/tmp/meeting-bot-missing-env-for-preflight bash scripts/preflight.sh
-"$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py bot.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
+"$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py scripts/generate_release_manifest.py bot.py feishu_io.py audio_pipeline.py runtime_status.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
 bash MeetingBotMenuBarApp/build_release_app.sh
+bash 'dist/会议纪要助手.app/Contents/Resources/bootstrap/meeting-bot/scripts/install.sh' --verify-payload-only
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/会议纪要助手.app/Contents/Info.plist'
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' 'dist/会议纪要助手.app/Contents/Info.plist'
 file 'dist/会议纪要助手.app/Contents/MacOS/FeishuMeetingBot'
@@ -435,15 +444,16 @@ codesign --verify --deep --strict --verbose=2 'dist/会议纪要助手.app'
 验证结果：
 
 - pytest 已安装并可用，版本为 `9.1.0`。
-- 测试结果：`46 passed`。
+- 测试结果：`57 passed`。
 - Shell 脚本语法检查通过。
 - 安装前检查可执行完成；使用缺失 `.env` 路径时不会中断，当前机器仅有“无法读取物理内存”的提示级警告。
 - Python 编译检查通过。
-- 菜单栏 App 已重新构建，`Info.plist` 版本为 `0.4.0`，构建号为 `31`。
+- 菜单栏 App 已重新构建，`Info.plist` 版本为 `0.5.0`，构建号为 `32`。
 - App 可执行文件为 `Mach-O 64-bit executable arm64`。
 - `codesign --verify --deep --strict` 通过。
 - App 内嵌载荷路径为 `Contents/Resources/bootstrap/meeting-bot`，未生成旧 `bootstrap/feishu-meeting-bot`。
-- `scripts/build_setup_package.sh` 默认版本号已同步到 `0.4.0`，并重新生成 DMG。
+- App 内载荷原样校验通过；自动化测试确认任一受清单保护文件被修改时校验失败。
+- `scripts/build_setup_package.sh` 默认版本号已同步到 `0.5.0`，并重新生成 DMG 与发布元数据。
 
 ## 备份目录
 
@@ -507,14 +517,7 @@ ditto "$HOME/Library/Application Support/meeting-bot/dist/会议纪要助手.app
 
 ## 建议后续开发任务
 
-1. 继续拆分 `bot.py`：
-   - `feishu_io.py`
-   - `audio_pipeline.py`
-   - `runtime_status.py`
-2. 为 `feishu` 输入输出链路和 `audio_pipeline` 增加更贴近真实消息流的集成测试。
-3. 将会议库扫描迁移到后台 actor，并建立会话目录增量索引，进一步优化超大会议库。
-4. 为未来在线更新增加签名清单和可验证的版本元数据，避免仅依赖安装盘文件名判断版本。
-5. 如果要分发给非开发用户，完成 Developer ID 签名和公证，减少 macOS 打开拦截。
+0.5 路线图已完成。后续以 `docs/DEVELOPMENT_ROADMAP.md` 为唯一规划入口：0.6 优先建立统一持久化任务调度与恢复；Developer ID 签名、公证和 stapling 仍需真实 Apple Developer 凭据，是公开分发门槛，不应在无凭据环境中标记为已完成。
 
 ## 新线程建议切入点
 

@@ -3,7 +3,7 @@ import Combine
 import Darwin
 import Foundation
 
-struct MeetingRecord: Identifiable, Equatable {
+struct MeetingRecord: Identifiable, Equatable, Sendable {
     let id: String
     let sessionID: String
     let sessionURL: URL
@@ -283,6 +283,127 @@ private struct LocalMeetingRequestSnapshot: Decodable {
     let formats: [String]?
 }
 
+private struct MeetingSessionFingerprint: Equatable, Sendable {
+    let itemCount: Int
+    let totalSize: Int
+    let latestModificationDate: Date?
+    let localMeetingProcessActive: Bool
+}
+
+private struct MeetingLibraryScanResult: Sendable {
+    let meetings: [MeetingRecord]
+    let errorMessage: String?
+}
+
+private actor MeetingLibraryIndex {
+    private struct CacheEntry: Sendable {
+        let fingerprint: MeetingSessionFingerprint
+        let meeting: MeetingRecord?
+    }
+
+    private let fileManager = FileManager.default
+    private var cache: [String: CacheEntry] = [:]
+
+    func scan(
+        sessionsDirectory: URL,
+        forceReload: Bool,
+        localMeetingProcessActive: Bool
+    ) -> MeetingLibraryScanResult {
+        guard FileManager.default.fileExists(atPath: sessionsDirectory.path) else {
+            cache.removeAll()
+            return MeetingLibraryScanResult(meetings: [], errorMessage: nil)
+        }
+
+        do {
+            let sessionURLs = try fileManager.contentsOfDirectory(
+                at: sessionsDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            .filter { url in
+                (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            }
+            let activeSessionIDs = Set(sessionURLs.map(\.lastPathComponent))
+            cache = cache.filter { activeSessionIDs.contains($0.key) }
+
+            let meetings = sessionURLs.compactMap { sessionURL -> MeetingRecord? in
+                let fingerprint = fingerprint(
+                    for: sessionURL,
+                    localMeetingProcessActive: localMeetingProcessActive
+                )
+                let sessionID = sessionURL.lastPathComponent
+                if !forceReload,
+                   let cached = cache[sessionID],
+                   cached.fingerprint == fingerprint {
+                    return cached.meeting
+                }
+
+                let meeting = MeetingLibraryStore.loadMeetingRecord(
+                    from: sessionURL,
+                    localMeetingProcessActive: localMeetingProcessActive
+                )
+                cache[sessionID] = CacheEntry(
+                    fingerprint: fingerprint,
+                    meeting: meeting
+                )
+                return meeting
+            }
+            .sorted { lhs, rhs in
+                let lhsDate = lhs.createdAt ?? .distantPast
+                let rhsDate = rhs.createdAt ?? .distantPast
+                if lhsDate == rhsDate {
+                    return lhs.sessionID > rhs.sessionID
+                }
+                return lhsDate > rhsDate
+            }
+            return MeetingLibraryScanResult(meetings: meetings, errorMessage: nil)
+        } catch {
+            return MeetingLibraryScanResult(
+                meetings: [],
+                errorMessage: "会议目录读取失败：\(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func fingerprint(
+        for sessionURL: URL,
+        localMeetingProcessActive: Bool
+    ) -> MeetingSessionFingerprint {
+        let keys: Set<URLResourceKey> = [
+            .contentModificationDateKey,
+            .fileSizeKey,
+            .isRegularFileKey,
+        ]
+        let files = (try? fileManager.contentsOfDirectory(
+            at: sessionURL,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var totalSize = 0
+        var latestModificationDate: Date?
+        var itemCount = 0
+        for file in files {
+            guard let values = try? file.resourceValues(forKeys: keys),
+                  values.isRegularFile == true else {
+                continue
+            }
+            itemCount += 1
+            totalSize += values.fileSize ?? 0
+            if let date = values.contentModificationDate,
+               latestModificationDate == nil || date > latestModificationDate! {
+                latestModificationDate = date
+            }
+        }
+        return MeetingSessionFingerprint(
+            itemCount: itemCount,
+            totalSize: totalSize,
+            latestModificationDate: latestModificationDate,
+            localMeetingProcessActive: localMeetingProcessActive
+        )
+    }
+}
+
+@MainActor
 final class MeetingLibraryStore: ObservableObject {
     @Published private(set) var meetings: [MeetingRecord] = []
     @Published private(set) var metadata = LibraryMetadataDocument()
@@ -306,11 +427,14 @@ final class MeetingLibraryStore: ObservableObject {
     @Published private(set) var isCreatingLocalMeeting = false
     @Published private(set) var isCancellingLocalMeeting = false
     @Published private(set) var localMeetingCreationMessage = ""
+    @Published private(set) var isScanningMeetings = false
 
     private let fileManager = FileManager.default
-    private var lastSessionsDirectoryModificationDate: Date?
+    private let meetingIndex = MeetingLibraryIndex()
     private var localMeetingProcess: Process?
     private var pendingProgressReload: DispatchWorkItem?
+    private var pendingMeetingScan = false
+    private var pendingForcedMeetingScan = false
 
     init() {
         reload()
@@ -390,18 +514,39 @@ final class MeetingLibraryStore: ObservableObject {
 
     func reload(forceScan: Bool = false) {
         loadMetadata()
-        if forceScan || shouldRescanMeetings() {
-            meetings = scanMeetings()
-            lastSessionsDirectoryModificationDate = sessionsDirectoryModificationDate()
-        }
-
-        if let selectedMeetingID,
-           meetings.contains(where: { $0.id == selectedMeetingID }) {
+        if isScanningMeetings {
+            pendingMeetingScan = true
+            pendingForcedMeetingScan = pendingForcedMeetingScan || forceScan
             return
         }
+        isScanningMeetings = true
+        let localMeetingProcessActive = isLocalMeetingProcessActive()
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await meetingIndex.scan(
+                sessionsDirectory: AppPaths.sessionsDirectory,
+                forceReload: forceScan,
+                localMeetingProcessActive: localMeetingProcessActive
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.meetings = result.meetings
+                if let errorMessage = result.errorMessage {
+                    self.lastErrorMessage = errorMessage
+                } else if self.lastErrorMessage?.hasPrefix("会议目录读取失败") == true {
+                    self.lastErrorMessage = nil
+                }
+                self.isScanningMeetings = false
+                self.normalizeSelectionForCurrentFilter()
 
-        selectedMeetingID = meetings.first?.id
-        selectedMeetingIDs = selectedMeetingID.map { [$0] } ?? []
+                if self.pendingMeetingScan {
+                    let pendingForce = self.pendingForcedMeetingScan
+                    self.pendingMeetingScan = false
+                    self.pendingForcedMeetingScan = false
+                    self.reload(forceScan: pendingForce)
+                }
+            }
+        }
     }
 
     func reloadMetadata() {
@@ -1012,7 +1157,7 @@ final class MeetingLibraryStore: ObservableObject {
         if let speakerMapURL {
             arguments.append(contentsOf: ["--speaker-map-file", speakerMapURL.path])
         }
-        if let formats = decodeLocalMeetingRequest(in: meeting.sessionURL)?.formats,
+        if let formats = Self.decodeLocalMeetingRequest(in: meeting.sessionURL)?.formats,
            !formats.isEmpty {
             arguments.append(contentsOf: ["--formats", formats.sorted().joined(separator: ",")])
         }
@@ -1216,7 +1361,7 @@ final class MeetingLibraryStore: ObservableObject {
             transcriptURL: nil,
             templateID: templateID.isEmpty ? "auto" : templateID,
             exportFormats: Set(
-                decodeLocalMeetingRequest(in: meeting.sessionURL)?.formats ?? ["html", "docx"]
+                Self.decodeLocalMeetingRequest(in: meeting.sessionURL)?.formats ?? ["html", "docx"]
             )
         )
         createLocalMeeting(request: request, reuseSessionURL: meeting.sessionURL)
@@ -1586,60 +1731,12 @@ final class MeetingLibraryStore: ObservableObject {
         }
     }
 
-    private func scanMeetings() -> [MeetingRecord] {
-        guard AppPaths.exists(AppPaths.sessionsDirectory) else {
-            return []
-        }
-
-        do {
-            let sessionURLs = try fileManager.contentsOfDirectory(
-                at: AppPaths.sessionsDirectory,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )
-            .filter { url in
-                (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-            }
-
-            // 整次扫描只探测一次锁状态：用于识别陈旧 processing 草稿（进程已退出但状态未落定）。
-            let localMeetingProcessActive = isLocalMeetingProcessActive()
-            return sessionURLs
-                .compactMap { loadMeetingRecord(from: $0, localMeetingProcessActive: localMeetingProcessActive) }
-                .sorted { lhs, rhs in
-                    let lhsDate = lhs.createdAt ?? .distantPast
-                    let rhsDate = rhs.createdAt ?? .distantPast
-                    if lhsDate == rhsDate {
-                        return lhs.sessionID > rhs.sessionID
-                    }
-                    return lhsDate > rhsDate
-                }
-        } catch {
-            lastErrorMessage = "会议目录读取失败：\(error.localizedDescription)"
-            return []
-        }
-    }
-
-    private func shouldRescanMeetings() -> Bool {
-        guard !meetings.isEmpty else {
-            return true
-        }
-
-        return sessionsDirectoryModificationDate() != lastSessionsDirectoryModificationDate
-    }
-
-    private func sessionsDirectoryModificationDate() -> Date? {
-        guard AppPaths.exists(AppPaths.sessionsDirectory) else {
-            return nil
-        }
-
-        return try? AppPaths.sessionsDirectory
-            .resourceValues(forKeys: [.contentModificationDateKey])
-            .contentModificationDate
-    }
-
-    private func loadMeetingRecord(from sessionURL: URL, localMeetingProcessActive: Bool) -> MeetingRecord? {
+    nonisolated fileprivate static func loadMeetingRecord(
+        from sessionURL: URL,
+        localMeetingProcessActive: Bool
+    ) -> MeetingRecord? {
         let sessionID = sessionURL.lastPathComponent
-        let sessionFiles = (try? fileManager.contentsOfDirectory(
+        let sessionFiles = (try? FileManager.default.contentsOfDirectory(
             at: sessionURL,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
@@ -1780,22 +1877,22 @@ final class MeetingLibraryStore: ObservableObject {
         )
     }
 
-    private func decodeLocalMeetingState(in sessionURL: URL) -> LocalMeetingStateSnapshot? {
+    nonisolated private static func decodeLocalMeetingState(in sessionURL: URL) -> LocalMeetingStateSnapshot? {
         decodeJSON(LocalMeetingStateSnapshot.self, at: sessionURL.appendingPathComponent("local_meeting_state.json"))
     }
 
-    private func decodeLocalMeetingRequest(in sessionURL: URL) -> LocalMeetingRequestSnapshot? {
+    nonisolated private static func decodeLocalMeetingRequest(in sessionURL: URL) -> LocalMeetingRequestSnapshot? {
         decodeJSON(LocalMeetingRequestSnapshot.self, at: sessionURL.appendingPathComponent("local_meeting_request.json"))
     }
 
-    private func decodeJSON<T: Decodable>(_ type: T.Type, at url: URL) -> T? {
+    nonisolated private static func decodeJSON<T: Decodable>(_ type: T.Type, at url: URL) -> T? {
         guard let data = try? Data(contentsOf: url) else {
             return nil
         }
         return try? JSONDecoder().decode(type, from: data)
     }
 
-    private func decodeJSONObject(at url: URL) -> [String: Any] {
+    nonisolated private static func decodeJSONObject(at url: URL) -> [String: Any] {
         guard let data = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
@@ -1803,7 +1900,7 @@ final class MeetingLibraryStore: ObservableObject {
         return object
     }
 
-    private func decodeReport(at url: URL) -> MeetingReportSnapshot? {
+    nonisolated private static func decodeReport(at url: URL) -> MeetingReportSnapshot? {
         guard let data = try? Data(contentsOf: url) else {
             return nil
         }
@@ -1811,7 +1908,7 @@ final class MeetingLibraryStore: ObservableObject {
         return try? JSONDecoder().decode(MeetingReportSnapshot.self, from: data)
     }
 
-    private func preferredFile(in directory: URL, matching names: [String]) -> URL? {
+    nonisolated private static func preferredFile(in directory: URL, matching names: [String]) -> URL? {
         for name in names {
             let candidate = directory.appendingPathComponent(name)
             if AppPaths.exists(candidate) {
@@ -1821,14 +1918,14 @@ final class MeetingLibraryStore: ObservableObject {
         return nil
     }
 
-    private func latestFile(in files: [URL], pathExtension: String) -> URL? {
+    nonisolated private static func latestFile(in files: [URL], pathExtension: String) -> URL? {
         return files
             .filter { $0.pathExtension.lowercased() == pathExtension }
             .sorted(by: isNewerFile)
             .first
     }
 
-    private func latestMarkdownSummary(in files: [URL]) -> URL? {
+    nonisolated private static func latestMarkdownSummary(in files: [URL]) -> URL? {
         return files
             .filter {
                 $0.pathExtension.lowercased() == "md"
@@ -1838,12 +1935,12 @@ final class MeetingLibraryStore: ObservableObject {
             .first
     }
 
-    private func isGeneratedSummaryMarkdown(_ url: URL) -> Bool {
+    nonisolated private static func isGeneratedSummaryMarkdown(_ url: URL) -> Bool {
         let name = url.deletingPathExtension().lastPathComponent
         return name.contains("匿名版") || name.contains("实名版")
     }
 
-    private func preferredAudioFile(in files: [URL]) -> URL? {
+    nonisolated private static func preferredAudioFile(in files: [URL]) -> URL? {
         return files
             .filter {
                 ["m4a", "mp3", "wav", "aac", "flac", "ogg", "opus", "mp4", "mov", "webm"]
@@ -1854,7 +1951,7 @@ final class MeetingLibraryStore: ObservableObject {
             .first
     }
 
-    private func loadSpeakerIDs(from url: URL) -> [String] {
+    nonisolated private static func loadSpeakerIDs(from url: URL) -> [String] {
         guard let data = try? Data(contentsOf: url),
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
             return []
@@ -1865,7 +1962,7 @@ final class MeetingLibraryStore: ObservableObject {
             .sorted()
     }
 
-    private static func isDisplayableSpeakerID(_ value: String) -> Bool {
+    nonisolated private static func isDisplayableSpeakerID(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != "TEXT" else {
             return false
@@ -1902,7 +1999,7 @@ final class MeetingLibraryStore: ObservableObject {
         return lines.last ?? fallback
     }
 
-    private func isNewerFile(_ lhs: URL, _ rhs: URL) -> Bool {
+    nonisolated private static func isNewerFile(_ lhs: URL, _ rhs: URL) -> Bool {
         let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]))
             .flatMap(\.contentModificationDate) ?? .distantPast
         let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))

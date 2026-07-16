@@ -1,10 +1,11 @@
-# 会议纪要助手 0.4.0 安装文档
+# 会议纪要助手 0.5.0 安装文档
 
 ## 配套文档
 
 - 安装与升级说明：`docs/SETUP_GUIDE.html`
 - 使用说明：`docs/SOFTWARE_GUIDE.html`
 - 分享清单：`docs/SHARE_CHECKLIST.md`
+- 开发路线图：`docs/DEVELOPMENT_ROADMAP.md`
 
 ## 支持环境
 
@@ -56,17 +57,18 @@ codex --version
 
 ### 推荐方式：二合一图形化安装盘
 
-默认分发物为 `会议纪要助手 0.4.0 安装盘.dmg`。其中包含：
+默认分发物为 `会议纪要助手 0.5.0 安装盘.dmg`。其中包含：
 
 - `会议纪要助手.app`
 - `Applications` 快捷入口
 - `说明文档/安装与升级说明.html`
 - `说明文档/使用说明.html`
 - `说明文档/更新记录.md`
+- `说明文档/开发路线图.md`
 
 使用方式：
 
-1. 双击打开 `会议纪要助手 0.4.0 安装盘.dmg`。
+1. 双击打开 `会议纪要助手 0.5.0 安装盘.dmg`。
 2. 将 `会议纪要助手.app` 拖入 `Applications`。
 3. 在“应用程序”中首次打开 App。
 4. App 会自动判断当前用户目录中是否已有安装：
@@ -96,6 +98,7 @@ codex --version
   - 若机器尚无 Homebrew，App 会提供 `brew.sh` 官方入口；为避免未经确认执行网络脚本，不会自动安装 Homebrew。完成官方安装后返回重试即可。
 - 首次启动安装仍需要网络下载 Python 依赖；若本机没有 Python 3.12+，可由 App 自动在线准备独立运行时。
 - 当前安装包未做 Developer ID 签名和公证；首次在其他电脑上打开时，macOS 可能会给出安全提示。
+- 0.5.0 的 App 内载荷包含逐文件 SHA-256 清单。首次部署或升级会先完成完整性校验，再备份和覆盖旧版；校验失败时当前版本不会被改动。
 
 ### 依赖安装策略
 
@@ -115,6 +118,12 @@ bash scripts/install.sh --dependency-mode reuse
 bash scripts/install.sh --dependency-mode offline
 bash scripts/install.sh --dependency-mode online
 bash scripts/install.sh --dependency-mode managed-online
+```
+
+若只需检查 App 内安装载荷是否完整，不执行安装：
+
+```bash
+bash scripts/install.sh --verify-payload-only
 ```
 
 如果需要制作离线包，可在一台能联网的同类机器上先运行：
@@ -187,9 +196,9 @@ bash "$HOME/Library/Application Support/meeting-bot/scripts/doctor.sh"
 
 ## 从旧版本升级
 
-如果已经安装并运行过旧版，仍然优先使用 `会议纪要助手 0.4.0 安装盘.dmg`。把新版 App 拖入 `Applications` 覆盖旧版后，再打开 App，程序会自动识别为升级路径；如果旧版仍在 `$HOME/Library/Application Support/meetin-bot`、`$HOME/Library/Application Support/feishu-meeting-bot`、`$HOME/meetin-bot`、`$HOME/meeting-bot` 或 `$HOME/feishu-meeting-bot`，会把 `.env`、虚拟环境和用户数据迁移到新的 `$HOME/Library/Application Support/meeting-bot`，并把旧根目录下的日志迁到 `$HOME/Library/Logs/meeting-bot`。
+如果已经安装并运行过旧版，仍然优先使用 `会议纪要助手 0.5.0 安装盘.dmg`。把新版 App 拖入 `Applications` 覆盖旧版后，再打开 App，程序会自动识别为升级路径；如果旧版仍在 `$HOME/Library/Application Support/meetin-bot`、`$HOME/Library/Application Support/feishu-meeting-bot`、`$HOME/meetin-bot`、`$HOME/meeting-bot` 或 `$HOME/feishu-meeting-bot`，会把 `.env`、虚拟环境和用户数据迁移到新的 `$HOME/Library/Application Support/meeting-bot`，并把旧根目录下的日志迁到 `$HOME/Library/Logs/meeting-bot`。
 
-0.4.0 的升级过程会分别备份运行组件、Python 环境和已安装 App。任一阶段失败时会自动恢复旧版，`sessions/`、`downloads/`、`library/`、运行状态和本地配置不会被覆盖；安装窗口会显示失败阶段与恢复结果。
+0.4.0 起，升级过程会分别备份运行组件、Python 环境和已安装 App。0.5.0 在备份前增加载荷完整性校验。任一阶段失败时会自动恢复旧版，`sessions/`、`downloads/`、`library/`、运行状态和本地配置不会被覆盖；安装窗口会显示失败阶段与恢复结果。
 
 它会在保留 `.env`、已有保存位置、历史会议、日志、`library/` 和本地模板的前提下更新程序文件、菜单栏 App 与 LaunchAgent。详细步骤见 `docs/UPGRADE_GUIDE.md`。
 
@@ -281,9 +290,10 @@ bash scripts/build_setup_package.sh
 
 - 重新构建菜单栏 App。
 - 排除 `.git`、本地运行数据和密钥，并在完整安装时清理旧 App 资源残留。
-- 生成默认交付物 `dist/会议纪要助手 0.4.0 安装盘.dmg`。
-- 把安装与升级说明、使用说明和更新记录一并放入安装盘。
+- 生成默认交付物 `dist/会议纪要助手 0.5.0 安装盘.dmg`。
+- 把安装与升级说明、使用说明、更新记录和开发路线图一并放入安装盘。
 - 同步在 `dist/` 下生成线程交接汇总。
+- 生成 `dist/release-manifest-0.5.0.json`，记录安装盘大小、SHA-256、版本和构建号；如配置 ECDSA P-256 发布密钥，同时生成签名文件。
 
 ## 卸载
 

@@ -1,40 +1,28 @@
-import fcntl
 import os
 import re
 import json
-import time
 import uuid
-import threading
-import subprocess
 from pathlib import Path
-from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
 # Allow unsupported Apple GPU operations to fall back to CPU.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
-import requests
 # pyannote telemetry can block long-running background processes when its
 # exporter connection becomes stale. The bot runs fully locally, so disable it.
 os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import (
-    ReplyMessageRequest,
-    ReplyMessageRequestBody,
-    P2ImMessageReceiveV1,
-)
+from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 
-from chinese_text import simplify_chinese
-from asr_runtime import asr_runtime_description, create_asr_model, transcribe_with_asr_model
-from diarization_runtime import configure_diarization_pipeline, run_diarization_pipeline
+from audio_pipeline import AudioPipeline
+from feishu_io import FeishuIO
 from llm_backend import llm_runtime_description, run_llm, write_json_atomic
+from runtime_status import RuntimeStatusWriter, runtime_timestamp
 from speaker_naming import build_anonymous_speaker_map
 from meetingbot_config import (
-    ASR_LANGUAGE,
     ASR_MODEL,
-    BASE_DIR,
     DIARIZATION_MODEL,
     DOWNLOAD_DIR,
     FEISHU_APP_ID,
@@ -46,7 +34,6 @@ from meetingbot_config import (
     RUNTIME_EVENTS_DIR,
     RUNTIME_STATUS_FILE,
     SCHEMA_DIR,
-    SESSION_DIR,
     TASK_MAX_PENDING,
     TASK_MAX_WORKERS,
     get_allowed_templates,
@@ -77,7 +64,6 @@ from transcript_material import (
     create_text_segments_from_transcript,
     normalize_uploaded_transcript_text,
 )
-from transcription_progress import TranscriptionProgress, audio_duration_seconds
 from task_runtime import BoundedTaskExecutor, PersistentMessageDeduplicator
 
 
@@ -85,8 +71,6 @@ from task_runtime import BoundedTaskExecutor, PersistentMessageDeduplicator
 # 2. 全局状态
 # ============================================================
 
-DIARIZATION_LOCK = threading.Lock()
-MODEL_LOCK = threading.Lock()
 MESSAGE_DEDUPLICATOR = PersistentMessageDeduplicator(
     RUNTIME_DIR / "processed_message_ids.json"
 )
@@ -94,176 +78,16 @@ MESSAGE_TASKS = BoundedTaskExecutor(
     max_workers=TASK_MAX_WORKERS,
     max_pending=TASK_MAX_PENDING,
 )
-_whisper_model = None
-_diarization_pipeline = None
-_tenant_token = ""
-_tenant_token_expires_at = 0.0
-_tenant_token_lock = threading.Lock()
-
-
-def runtime_timestamp() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
-
-
-def session_runtime_fields(session_path: Optional[Path]) -> Dict[str, str]:
-    if session_path is None:
-        return {"session_id": "", "session_dir": ""}
-
-    return {
-        "session_id": session_path.name,
-        "session_dir": str(session_path),
-    }
-
-
-def write_runtime_status(
-    task_status: str,
-    stage: str,
-    message: str,
-    session_id: str = "",
-    session_dir: str = "",
-    latest_pdf: str = "",
-    latest_docx: str = "",
-    latest_html: str = "",
-    latest_md: str = "",
-    service_status: str = "running",
-) -> None:
-    try:
-        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-
-        payload = {
-            "service_status": service_status,
-            "task_status": task_status,
-            "stage": stage,
-            "message": message,
-            "session_id": session_id,
-            "session_dir": session_dir,
-            "latest_pdf": latest_pdf,
-            "latest_docx": latest_docx,
-            "latest_html": latest_html,
-            "latest_md": latest_md,
-            "updated_at": runtime_timestamp(),
-            "source": "feishu_bot",
-        }
-
-        tmp_path = RUNTIME_DIR / f".status_{uuid.uuid4().hex}.json.tmp"
-        tmp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        tmp_path.replace(RUNTIME_STATUS_FILE)
-    except Exception as e:
-        print(f"[Runtime Status] 写入失败：{e}")
-
-
-def write_session_runtime_status(
-    task_status: str,
-    stage: str,
-    message: str,
-    session_path: Optional[Path],
-    latest_pdf: Optional[Path] = None,
-    latest_docx: Optional[Path] = None,
-    latest_html: Optional[Path] = None,
-    latest_md: Optional[Path] = None,
-) -> None:
-    fields = session_runtime_fields(session_path)
-    write_runtime_status(
-        task_status=task_status,
-        stage=stage,
-        message=message,
-        session_id=fields["session_id"],
-        session_dir=fields["session_dir"],
-        latest_pdf=str(latest_pdf) if latest_pdf else "",
-        latest_docx=str(latest_docx) if latest_docx else "",
-        latest_html=str(latest_html) if latest_html else "",
-        latest_md=str(latest_md) if latest_md else "",
-    )
-
-
-def local_meeting_task_is_alive() -> bool:
-    """通过 local_meeting.lock 的 flock 判断本地新增会议任务是否仍在运行。"""
-    lock_path = RUNTIME_DIR / "local_meeting.lock"
-    if not lock_path.exists():
-        return False
-
-    try:
-        with lock_path.open("a+", encoding="utf-8") as handle:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return True
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            return False
-    except OSError:
-        return False
-
-
-def write_idle_runtime_status_if_no_active_task() -> None:
-    # bot 启动时自身没有任务在跑；状态若为 processing，只有当持锁的
-    # 本地新增会议进程确实存活时才保留，否则视为上次任务崩溃遗留的
-    # 陈旧状态，重置为 idle，避免状态栏永远显示"处理中"。
-    try:
-        if RUNTIME_STATUS_FILE.exists():
-            current = json.loads(RUNTIME_STATUS_FILE.read_text(encoding="utf-8"))
-            if (
-                current.get("task_status") == "processing"
-                and local_meeting_task_is_alive()
-            ):
-                return
-    except (OSError, json.JSONDecodeError):
-        pass
-
-    write_runtime_status(
-        task_status="idle",
-        stage="idle",
-        message="机器人后台服务运行中",
-    )
-
-
-def write_meeting_done_event(
-    session_path: Path,
-    report: Dict,
-    docx_path: Path,
-    pdf_path: Optional[Path],
-    html_path: Path,
-    md_path: Optional[Path],
-    named: bool,
-) -> None:
-    try:
-        RUNTIME_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
-
-        version = "named" if named else "anonymous"
-        created_at = runtime_timestamp()
-        filename = (
-            "meeting_done_"
-            + datetime.now().strftime("%Y%m%d_%H%M%S")
-            + f"_{uuid.uuid4().hex[:6]}.json"
-        )
-        event_path = RUNTIME_EVENTS_DIR / filename
-        tmp_path = RUNTIME_EVENTS_DIR / f".{filename}.tmp"
-
-        payload = {
-            "event": "meeting_done",
-            "session_id": session_path.name,
-            "session_dir": str(session_path),
-            "version": version,
-            "report_title": report.get("report_title", "智能会议纪要"),
-            "summary_docx": str(docx_path),
-            "summary_pdf": str(pdf_path) if pdf_path else "",
-            "summary_html": str(html_path),
-            "summary_md": str(md_path) if md_path else "",
-            "created_at": created_at,
-        }
-
-        tmp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        tmp_path.replace(event_path)
-    except Exception as e:
-        print(f"[Runtime Event] 写入失败：{e}")
-
-
-write_idle_runtime_status_if_no_active_task()
+RUNTIME_STATUS = RuntimeStatusWriter(
+    runtime_dir=RUNTIME_DIR,
+    status_file=RUNTIME_STATUS_FILE,
+    events_dir=RUNTIME_EVENTS_DIR,
+    source="feishu_bot",
+)
+write_runtime_status = RUNTIME_STATUS.write_status
+write_session_runtime_status = RUNTIME_STATUS.write_session_status
+write_meeting_done_event = RUNTIME_STATUS.write_meeting_done_event
+RUNTIME_STATUS.write_idle_if_no_active_task()
 
 
 # ============================================================
@@ -277,76 +101,29 @@ feishu_client = (
     .log_level(lark.LogLevel.INFO)
     .build()
 )
+FEISHU_IO = FeishuIO(
+    app_id=FEISHU_APP_ID,
+    app_secret=FEISHU_APP_SECRET,
+    download_dir=DOWNLOAD_DIR,
+    download_max_mb=DOWNLOAD_MAX_MB,
+    client=feishu_client,
+)
+AUDIO_PIPELINE = AudioPipeline(
+    asr_model_name=ASR_MODEL,
+    diarization_model_name=DIARIZATION_MODEL,
+    hf_token=HF_TOKEN,
+    ffmpeg_bin=FFMPEG_BIN,
+    status_callback=write_session_runtime_status,
+)
 
-
-def get_whisper_model():
-    global _whisper_model
-    if _whisper_model is not None:
-        return _whisper_model
-    with MODEL_LOCK:
-        if _whisper_model is None:
-            print(f"[ASR] 首次任务正在加载模型：{ASR_MODEL}")
-            _whisper_model = create_asr_model()
-            print(f"[ASR] 模型加载完成：{asr_runtime_description()}")
-    return _whisper_model
-
-
-def get_diarization_pipeline():
-    global _diarization_pipeline
-    if _diarization_pipeline is not None:
-        return _diarization_pipeline
-    with MODEL_LOCK:
-        if _diarization_pipeline is None:
-            from pyannote.audio import Pipeline
-
-            print(f"[Diarization] 首次任务正在加载模型：{DIARIZATION_MODEL}")
-            pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL, token=HF_TOKEN)
-            device = configure_diarization_pipeline(pipeline)
-            _diarization_pipeline = pipeline
-            print(f"[Diarization] 模型加载完成，运行设备：{device.type}")
-    return _diarization_pipeline
-
-
-# ============================================================
-# 6. 飞书回复工具
-# ============================================================
-
-def reply_text(message_id: str, text: str) -> None:
-    content = json.dumps({"text": text}, ensure_ascii=False)
-
-    request = (
-        ReplyMessageRequest.builder()
-        .message_id(message_id)
-        .request_body(
-            ReplyMessageRequestBody.builder()
-            .content(content)
-            .msg_type("text")
-            .build()
-        )
-        .build()
-    )
-
-    response = feishu_client.im.v1.message.reply(request)
-
-    if not response.success():
-        print("[Feishu] 回复失败：")
-        print(response.code, response.msg, response.raw.content)
-
-
-def reply_long_text(message_id: str, text: str, chunk_size: int = 3500) -> None:
-    text = text.strip()
-    if not text:
-        reply_text(message_id, "处理完成，但没有生成有效文本。")
-        return
-
-    chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-
-    for idx, chunk in enumerate(chunks, start=1):
-        prefix = ""
-        if len(chunks) > 1:
-            prefix = f"【第 {idx}/{len(chunks)} 段】\n"
-        reply_text(message_id, prefix + chunk)
-        time.sleep(0.5)
+reply_text = FEISHU_IO.reply_text
+reply_long_text = FEISHU_IO.reply_long_text
+download_message_resource = FEISHU_IO.download_message_resource
+get_referenced_message_payload = FEISHU_IO.get_referenced_message_payload
+reply_file = FEISHU_IO.reply_file
+convert_audio_to_wav_16k_mono = AUDIO_PIPELINE.convert_audio_to_wav_16k_mono
+diarize_audio = AUDIO_PIPELINE.diarize_audio
+transcribe_audio = AUDIO_PIPELINE.transcribe_audio
 
 
 def is_force_retranscribe(text: str = "") -> bool:
@@ -398,442 +175,6 @@ def looks_like_transcript_text(text: str) -> bool:
         if re.match(r"^(\[?\d{1,2}:\d{2}(?::\d{2})?\]?|说话人\d+|speaker\s*\d+|SPEAKER[_\s-]?\d+|[\u4e00-\u9fa5]{2,6}[：:])", line, re.I)
     )
     return speaker_like >= 3
-
-
-# ============================================================
-# 7. 飞书资源下载与上传
-# ============================================================
-
-def get_tenant_access_token() -> str:
-    global _tenant_token, _tenant_token_expires_at
-    with _tenant_token_lock:
-        if _tenant_token and time.time() < _tenant_token_expires_at - 60:
-            return _tenant_token
-
-        url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-        payload = {"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}
-        resp = requests.post(url, json=payload, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("code") != 0:
-            raise RuntimeError(f"获取飞书访问凭据失败（code={data.get('code', 'unknown')}）")
-        token = data.get("tenant_access_token")
-        if not token:
-            raise RuntimeError("飞书访问凭据响应为空")
-        try:
-            expires_in = max(300, int(data.get("expire", 7200) or 7200))
-        except (TypeError, ValueError):
-            expires_in = 7200
-        _tenant_token = token
-        _tenant_token_expires_at = time.time() + expires_in
-        return token
-
-
-def download_message_resource(
-    message_id: str,
-    file_key: str,
-    filename: str,
-    resource_type: str = "file",
-) -> Path:
-    token = get_tenant_access_token()
-
-    safe_filename = (
-        filename.replace("/", "_")
-        .replace("\\", "_")
-        .replace(" ", "_")
-    )
-
-    save_path = DOWNLOAD_DIR / f"{int(time.time())}_{safe_filename}"
-
-    url = (
-        f"https://open.feishu.cn/open-apis/im/v1/messages/"
-        f"{message_id}/resources/{file_key}"
-    )
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-    }
-
-    params = {"type": resource_type or "file"}
-
-    resp = requests.get(
-        url,
-        headers=headers,
-        params=params,
-        timeout=600,
-        stream=True,
-    )
-    resp.raise_for_status()
-    max_bytes = DOWNLOAD_MAX_MB * 1024 * 1024
-    try:
-        declared_size = int(resp.headers.get("Content-Length", "0") or 0)
-    except (TypeError, ValueError):
-        declared_size = 0
-    if declared_size > max_bytes:
-        raise RuntimeError(f"文件超过允许大小（上限 {DOWNLOAD_MAX_MB} MB）")
-
-    received = 0
-    try:
-        with open(save_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                if not chunk:
-                    continue
-                received += len(chunk)
-                if received > max_bytes:
-                    raise RuntimeError(f"文件超过允许大小（上限 {DOWNLOAD_MAX_MB} MB）")
-                f.write(chunk)
-    except Exception:
-        save_path.unlink(missing_ok=True)
-        raise
-
-    return save_path
-
-
-def get_message_detail(message_id: str) -> Optional[Dict]:
-    token = get_tenant_access_token()
-    url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}"
-    headers = {"Authorization": f"Bearer {token}"}
-
-    resp = requests.get(url, headers=headers, timeout=30)
-    resp.raise_for_status()
-    payload = resp.json()
-
-    if payload.get("code") != 0:
-        print(f"[Feishu] 获取消息详情失败：{payload}")
-        return None
-
-    data = payload.get("data", {})
-    return data.get("items", [{}])[0] if data.get("items") else data.get("message")
-
-
-def extract_referenced_message_id(content: Dict, message_obj=None) -> str:
-    candidates = []
-    for key in [
-        "parent_id",
-        "root_id",
-        "quote_message_id",
-        "reply_in_thread_message_id",
-        "thread_id",
-    ]:
-        value = content.get(key)
-        if isinstance(value, str) and value.startswith("om_"):
-            candidates.append(value)
-
-    mentions = content.get("mentions")
-    if isinstance(mentions, list):
-        for mention in mentions:
-            if isinstance(mention, dict):
-                value = mention.get("id") or mention.get("message_id")
-                if isinstance(value, str) and value.startswith("om_"):
-                    candidates.append(value)
-
-    if message_obj is not None:
-        for attr in ["parent_id", "root_id", "thread_id"]:
-            value = getattr(message_obj, attr, "")
-            if isinstance(value, str) and value.startswith("om_"):
-                candidates.append(value)
-
-    return candidates[0] if candidates else ""
-
-
-def get_referenced_message_payload(content: Dict, message_obj=None) -> Optional[Dict]:
-    referenced_id = extract_referenced_message_id(content, message_obj)
-    if not referenced_id:
-        return None
-
-    item = get_message_detail(referenced_id)
-    if not item:
-        return None
-
-    body = item.get("body", {})
-    raw_content = body.get("content") or item.get("content") or "{}"
-    try:
-        parsed_content = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
-    except Exception:
-        parsed_content = {"text": str(raw_content)}
-
-    return {
-        "message_id": item.get("message_id", referenced_id),
-        "message_type": item.get("msg_type") or item.get("message_type") or "",
-        "content": parsed_content if isinstance(parsed_content, dict) else {"text": str(parsed_content)},
-    }
-
-
-def upload_file_to_feishu(file_path: Path) -> str:
-    token = get_tenant_access_token()
-    url = "https://open.feishu.cn/open-apis/im/v1/files"
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-    }
-
-    with open(file_path, "rb") as f:
-        files = {
-            "file": (file_path.name, f),
-        }
-        data = {
-            "file_type": "stream",
-            "file_name": file_path.name,
-        }
-
-        resp = requests.post(
-            url,
-            headers=headers,
-            data=data,
-            files=files,
-            timeout=600,
-        )
-
-    resp.raise_for_status()
-    payload = resp.json()
-
-    if payload.get("code") != 0:
-        raise RuntimeError(f"飞书文件上传失败：{payload}")
-
-    file_key = payload.get("data", {}).get("file_key")
-    if not file_key:
-        raise RuntimeError(f"飞书文件上传后未返回 file_key：{payload}")
-
-    return file_key
-
-
-def reply_file(message_id: str, file_path: Path) -> None:
-    file_key = upload_file_to_feishu(file_path)
-
-    content = json.dumps(
-        {"file_key": file_key},
-        ensure_ascii=False,
-    )
-
-    request = (
-        ReplyMessageRequest.builder()
-        .message_id(message_id)
-        .request_body(
-            ReplyMessageRequestBody.builder()
-            .content(content)
-            .msg_type("file")
-            .build()
-        )
-        .build()
-    )
-
-    response = feishu_client.im.v1.message.reply(request)
-
-    if not response.success():
-        raise RuntimeError(
-            f"飞书文件消息回复失败："
-            f"{response.code} {response.msg} {response.raw.content}"
-        )
-
-
-# ============================================================
-# 9. 音频预处理：统一转换为 16kHz 单声道 WAV
-# ============================================================
-
-def convert_audio_to_wav_16k_mono(
-    input_audio: Path,
-    session_path: Path,
-) -> Path:
-    output_wav = session_path / "analysis_audio_16k_mono.wav"
-
-    cmd = [
-        FFMPEG_BIN,
-        "-y",
-        "-i",
-        str(input_audio),
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-vn",
-        str(output_wav),
-    ]
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=1800,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            "FFmpeg 音频转换失败。\n"
-            f"STDOUT:\n{result.stdout}\n"
-            f"STDERR:\n{result.stderr}"
-        )
-
-    if not output_wav.exists():
-        raise RuntimeError("FFmpeg 未生成转换后的 WAV 文件")
-
-    return output_wav
-
-
-def load_waveform_for_pyannote(wav_path: Path) -> Dict:
-    import soundfile as sf
-    import torch
-
-    waveform_np, sample_rate = sf.read(str(wav_path), dtype="float32")
-
-    if waveform_np.ndim == 1:
-        waveform_np = waveform_np[None, :]
-    else:
-        waveform_np = waveform_np.T
-
-    waveform = torch.from_numpy(waveform_np)
-
-    return {
-        "waveform": waveform,
-        "sample_rate": sample_rate,
-    }
-
-
-# ============================================================
-# 10. 说话人分离与转写
-# ============================================================
-
-def diarize_audio(audio_path: Path, session_path: Path) -> List[Dict]:
-    print(f"[Diarization] 开始说话人分离：{audio_path.name}")
-
-    audio_for_pyannote = load_waveform_for_pyannote(audio_path)
-    progress_state = {"step": "", "percent": -1, "updated_at": 0.0}
-    step_labels = {
-        "segmentation": "检测语音活动",
-        "speaker_counting": "估算说话人数",
-        "embeddings": "提取说话人特征",
-        "discrete_diarization": "整理说话人时间段",
-    }
-
-    def progress_hook(
-        step_name: str,
-        _artifact=None,
-        completed: Optional[int] = None,
-        total: Optional[int] = None,
-        **_kwargs,
-    ) -> None:
-        if completed is None or total is None or total <= 0:
-            return
-
-        percent = min(100, max(0, int(completed * 100 / total)))
-        now = time.monotonic()
-        same_step = progress_state["step"] == step_name
-        if (
-            same_step
-            and percent < progress_state["percent"] + 5
-            and now < progress_state["updated_at"] + 15
-        ):
-            return
-
-        progress_state.update(
-            {"step": step_name, "percent": percent, "updated_at": now}
-        )
-        label = step_labels.get(step_name, step_name)
-        message = f"正在进行说话人分离：{label} {percent}%"
-        print(f"[Diarization] {label} {percent}%")
-        write_session_runtime_status(
-            task_status="processing",
-            stage="diarization",
-            message=message,
-            session_path=session_path,
-        )
-
-    if not DIARIZATION_LOCK.acquire(blocking=False):
-        write_session_runtime_status(
-            task_status="processing",
-            stage="diarization",
-            message="已有录音正在进行说话人分离，当前任务正在排队",
-            session_path=session_path,
-        )
-        DIARIZATION_LOCK.acquire()
-
-    try:
-        def on_device_fallback(_error: str) -> None:
-            message = "Apple GPU 不兼容当前音频处理步骤，已自动切换 CPU 继续"
-            print(f"[Diarization] {message}")
-            write_session_runtime_status(
-                task_status="processing",
-                stage="diarization",
-                message=message,
-                session_path=session_path,
-            )
-
-        output = run_diarization_pipeline(
-            get_diarization_pipeline(),
-            audio_for_pyannote,
-            hook=progress_hook,
-            on_fallback=on_device_fallback,
-        )
-    finally:
-        DIARIZATION_LOCK.release()
-
-    diarization = getattr(
-        output,
-        "exclusive_speaker_diarization",
-        output.speaker_diarization,
-    )
-
-    segments: List[Dict] = []
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
-        segments.append(
-            {
-                "start": float(turn.start),
-                "end": float(turn.end),
-                "speaker": str(speaker),
-            }
-        )
-
-    segments.sort(key=lambda x: x["start"])
-
-    out_path = session_path / "diarization.json"
-    out_path.write_text(
-        json.dumps(segments, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    print(f"[Diarization] 完成，共 {len(segments)} 段")
-    return segments
-
-
-def transcribe_audio(audio_path: Path, session_path: Path) -> List[Dict]:
-    print(f"[ASR] 开始转写：{audio_path.name}")
-
-    progress = TranscriptionProgress(
-        duration=audio_duration_seconds(audio_path),
-        update=lambda message: write_session_runtime_status(
-            task_status="processing",
-            stage="transcribing",
-            message=message,
-            session_path=session_path,
-        ),
-    )
-    progress.start()
-    segments, _info = transcribe_with_asr_model(get_whisper_model(), audio_path)
-
-    transcript_segments: List[Dict] = []
-    for seg in segments:
-        text = simplify_chinese(seg.text.strip())
-        progress.advance(float(seg.end))
-        if text:
-            transcript_segments.append(
-                {
-                    "start": float(seg.start),
-                    "end": float(seg.end),
-                    "text": text,
-                }
-            )
-
-    if not transcript_segments:
-        raise RuntimeError("转写结果为空")
-
-    progress.complete()
-    out_path = session_path / "transcript_segments.json"
-    out_path.write_text(
-        json.dumps(transcript_segments, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    print(f"[ASR] 完成，共 {len(transcript_segments)} 段")
-    return transcript_segments
 
 
 # ============================================================

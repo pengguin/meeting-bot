@@ -22,6 +22,7 @@ struct MeetingBotMenuBarAppApp: App {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let store = BotRuntimeStore()
     private let libraryStore = MeetingLibraryStore()
@@ -299,16 +300,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         processingAnimationFrame = 0
-        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self else {
-                return
-            }
-            self.processingAnimationFrame =
-                (self.processingAnimationFrame + 1) % Self.processingAnimationFrameCount
-            self.renderStatusIcon()
-        }
+        let timer = Timer(
+            timeInterval: 0.1,
+            target: self,
+            selector: #selector(advanceProcessingAnimation),
+            userInfo: nil,
+            repeats: true
+        )
         RunLoop.main.add(timer, forMode: .common)
         statusIconAnimationTimer = timer
+    }
+
+    @objc private func advanceProcessingAnimation() {
+        processingAnimationFrame =
+            (processingAnimationFrame + 1) % Self.processingAnimationFrameCount
+        renderStatusIcon()
     }
 
     private var shouldAnimateProcessingStatusIcon: Bool {
@@ -772,7 +778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-extension AppDelegate: UNUserNotificationCenterDelegate {
+extension AppDelegate: @preconcurrency UNUserNotificationCenterDelegate {
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,

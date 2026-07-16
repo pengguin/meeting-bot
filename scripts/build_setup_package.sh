@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="会议纪要助手"
-VERSION="0.4.0"
+VERSION="0.5.0"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP_ROOT="$PROJECT_ROOT/dist/setup"
 DMG_STAGING="$SETUP_ROOT/dmg"
@@ -26,6 +26,7 @@ ln -s /Applications "$DMG_STAGING/Applications"
 cp "$PROJECT_ROOT/docs/SETUP_GUIDE.html" "$DMG_STAGING/说明文档/安装与升级说明.html"
 cp "$PROJECT_ROOT/docs/SOFTWARE_GUIDE.html" "$DMG_STAGING/说明文档/使用说明.html"
 cp "$PROJECT_ROOT/docs/CHANGELOG.md" "$DMG_STAGING/说明文档/更新记录.md"
+cp "$PROJECT_ROOT/docs/DEVELOPMENT_ROADMAP.md" "$DMG_STAGING/说明文档/开发路线图.md"
 mkdir -p "$SWIFT_MODULE_CACHE_DIR"
 xcrun swiftc \
   -target arm64-apple-macosx14.0 \
@@ -75,5 +76,11 @@ hdiutil convert \
   -o "$DMG_PATH" >/dev/null
 
 cp "$PROJECT_ROOT/docs/THREAD_HANDOFF_SUMMARY.md" "$THREAD_HANDOFF_PATH"
+python3 "$PROJECT_ROOT/scripts/generate_release_manifest.py" artifact \
+  --artifact "$DMG_PATH" \
+  --output "$PROJECT_ROOT/dist/release-manifest-${VERSION}.json" \
+  --signature "$PROJECT_ROOT/dist/release-manifest-${VERSION}.sig" \
+  --app-version "$VERSION" \
+  --build-number "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_ROOT/dist/$APP_NAME.app/Contents/Info.plist")"
 echo "$DMG_PATH"
 echo "$THREAD_HANDOFF_PATH"

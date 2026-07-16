@@ -32,6 +32,51 @@ APP_INSTALL_ATTEMPTED=0
 ROLLBACK_READY=0
 INSTALL_SUCCEEDED=0
 CURRENT_STEP="准备安装"
+VERIFY_PAYLOAD_ONLY=0
+
+verify_payload_manifest() {
+  local marker manifest checksum_file expected_checksum actual_checksum signature public_key
+  marker="$SOURCE_ROOT/.meetingbot-packaged-payload"
+  manifest="$SOURCE_ROOT/release-manifest.json"
+  checksum_file="$SOURCE_ROOT/payload-files.sha256"
+  signature="$SOURCE_ROOT/release-manifest.sig"
+  public_key="$SOURCE_ROOT/release-public-key.pem"
+
+  [[ -f "$marker" ]] || {
+    info "源代码安装：未启用打包载荷校验"
+    return 0
+  }
+  [[ -f "$manifest" && -f "$checksum_file" ]] || {
+    printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=missing_manifest\n' >&2
+    return 1
+  }
+  expected_checksum="$(sed -nE 's/.*"checksum_file_sha256": "([0-9a-f]{64})".*/\1/p' "$manifest" | head -1)"
+  actual_checksum="$(shasum -a 256 "$checksum_file" | awk '{print $1}')"
+  [[ -n "$expected_checksum" && "$actual_checksum" == "$expected_checksum" ]] || {
+    printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=checksum_manifest_mismatch\n' >&2
+    return 1
+  }
+
+  if ! (cd "$SOURCE_ROOT" && shasum -a 256 -c "$(basename "$checksum_file")" >/dev/null); then
+    printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=file_hash_mismatch\n' >&2
+    return 1
+  fi
+
+  if [[ -f "$signature" || -f "$public_key" ]]; then
+    [[ -f "$signature" && -f "$public_key" ]] || {
+      printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=incomplete_signature\n' >&2
+      return 1
+    }
+    if ! /usr/bin/openssl dgst -sha256 -verify "$public_key" \
+      -signature "$signature" "$manifest" >/dev/null 2>&1; then
+      printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=signature_invalid\n' >&2
+      return 1
+    fi
+    info "安装载荷签名与文件完整性校验通过"
+  else
+    info "安装载荷文件完整性校验通过（未附加独立发布签名）"
+  fi
+}
 
 usage() {
   cat <<USAGE
@@ -45,6 +90,8 @@ usage() {
   --skip-app-install   跳过把菜单栏 App 复制到 /Applications
   --dependency-mode M  依赖安装策略：auto、reuse、offline、online、managed-online
   --python-bin PATH    指定 Python 3.12+ 可执行文件
+  --verify-payload-only
+                       只验证打包载荷，不执行安装
   -h, --help           显示帮助
 USAGE
 }
@@ -79,6 +126,10 @@ parse_args() {
       --python-bin)
         PYTHON_BIN="$2"
         shift 2
+        ;;
+      --verify-payload-only)
+        VERIFY_PAYLOAD_ONLY=1
+        shift
         ;;
       -h|--help)
         usage
@@ -874,6 +925,13 @@ main() {
   APP_INSTALL_PATH="${MEETINGBOT_APP_INSTALL_PATH:-/Applications/$APP_NAME.app}"
   LEGACY_APP_INSTALL_PATH="${MEETINGBOT_LEGACY_APP_INSTALL_PATH:-/Applications/Feishu Meeting Bot.app}"
 
+  CURRENT_STEP="校验安装载荷"
+  verify_payload_manifest
+  if [[ "$VERIFY_PAYLOAD_ONLY" -eq 1 ]]; then
+    INSTALL_SUCCEEDED=1
+    info "安装载荷验证完成"
+    return 0
+  fi
   CURRENT_STEP="安装前检查"
   print_checks
   CURRENT_STEP="备份当前版本"

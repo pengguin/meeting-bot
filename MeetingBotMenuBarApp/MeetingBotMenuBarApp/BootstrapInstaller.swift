@@ -426,6 +426,9 @@ final class BootstrapInstallerStore: ObservableObject {
     }
 
     private func installationFailureMessage(exitCode: Int32) -> String {
+        if recentOutput.contains(where: { $0.contains("code=PAYLOAD_INTEGRITY_FAILED") }) {
+            return "安装包完整性校验失败，未改动当前版本。请重新下载官方安装包后重试。"
+        }
         if recoveryMessage != nil {
             return "本次更新未完成，但旧版本已恢复，可以继续使用。请打开日志查看失败阶段后重试。"
         }

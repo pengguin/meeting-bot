@@ -705,7 +705,11 @@ private struct MeetingLibraryView: View {
     private var libraryStatusBar: some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(store.isCreatingLocalMeeting ? Color.statusProcessing : Color.statusDone)
+                .fill(
+                    store.isCreatingLocalMeeting || store.isScanningMeetings
+                        ? Color.statusProcessing
+                        : Color.statusDone
+                )
                 .frame(width: 7, height: 7)
 
             if selectedTab == .overview {
@@ -717,6 +721,7 @@ private struct MeetingLibraryView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
+                .disabled(store.isScanningMeetings)
                 .help("重新扫描 sessions")
 
                 Text("\(store.filteredMeetings.count) / \(store.meetings.count) 场会议")
@@ -740,6 +745,11 @@ private struct MeetingLibraryView: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.red)
                 .disabled(store.isCancellingLocalMeeting)
+            } else if store.isScanningMeetings {
+                ProgressView()
+                    .controlSize(.small)
+                Text("正在更新会议库")
+                    .lineLimit(1)
             }
         }
         .font(.caption)
@@ -935,6 +945,7 @@ private struct MeetingLibraryView: View {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
+            .disabled(store.isScanningMeetings)
             .help("重新扫描 sessions")
         }
     }
