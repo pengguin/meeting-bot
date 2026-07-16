@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
 
 APP_NAME="会议纪要助手"
 SERVICE_LABEL="com.pgui.feishu-meeting-bot"
@@ -25,6 +25,13 @@ DEPENDENCY_MODE="${DEPENDENCY_MODE:-auto}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 MANAGED_RUNTIME_ROOT="${MANAGED_RUNTIME_ROOT:-$HOME/Library/Application Support/$PROJECT_NAME/runtime}"
 MANAGED_PYTHON_BIN=""
+UPGRADE_BACKUP_DIR=""
+VENV_BACKUP_DIR=""
+APP_BACKUP_DIR=""
+APP_INSTALL_ATTEMPTED=0
+ROLLBACK_READY=0
+INSTALL_SUCCEEDED=0
+CURRENT_STEP="准备安装"
 
 usage() {
   cat <<USAGE
@@ -97,10 +104,89 @@ warn() {
 on_error() {
   local exit_code="$1"
   local line_no="$2"
-  warn "安装在第 ${line_no} 行中止，退出码 ${exit_code}"
+  warn "安装在第 ${line_no} 行中止，退出码 ${exit_code}（阶段：${CURRENT_STEP}）"
+  printf '[install][error] code=INSTALL_FAILED step=%s exit=%s\n' "$CURRENT_STEP" "$exit_code" >&2
+  rollback_install || true
+  restart_existing_service || true
 }
 
 trap 'on_error "$?" "$LINENO"' ERR
+
+create_upgrade_backup() {
+  [[ "$SOURCE_ROOT" != "$INSTALL_DIR" && -f "$INSTALL_DIR/bot.py" ]] || return 0
+  local stamp
+  stamp="$(date +%Y%m%d_%H%M%S)"
+  UPGRADE_BACKUP_DIR="$INSTALL_DIR/runtime/upgrade-backups/$stamp"
+  info "备份当前运行组件：$UPGRADE_BACKUP_DIR"
+  mkdir -p "$UPGRADE_BACKUP_DIR"
+  rsync -a \
+    --exclude '.env' \
+    --exclude '.venv' \
+    --exclude 'downloads' \
+    --exclude 'sessions' \
+    --exclude 'logs' \
+    --exclude 'runtime' \
+    --exclude 'library' \
+    --exclude 'tmp' \
+    --exclude 'dist' \
+    --exclude 'backups' \
+    "$INSTALL_DIR/" "$UPGRADE_BACKUP_DIR/"
+  ROLLBACK_READY=1
+}
+
+rollback_install() {
+  [[ "$INSTALL_SUCCEEDED" -eq 0 ]] || return 0
+  if [[ -n "$VENV_BACKUP_DIR" && -d "$VENV_BACKUP_DIR" ]]; then
+    warn "正在恢复更新前的 Python 运行环境"
+    rm -rf "$INSTALL_DIR/.venv"
+    mv "$VENV_BACKUP_DIR" "$INSTALL_DIR/.venv"
+  fi
+  if [[ "$ROLLBACK_READY" -eq 1 && -d "$UPGRADE_BACKUP_DIR" ]]; then
+    warn "正在恢复更新前的运行组件"
+    rsync -a --delete \
+      --exclude '.env' \
+      --exclude '.venv' \
+      --exclude 'downloads' \
+      --exclude 'sessions' \
+      --exclude 'logs' \
+      --exclude 'runtime' \
+      --exclude 'library' \
+      --exclude 'tmp' \
+      --exclude 'dist' \
+      --exclude 'backups' \
+      "$UPGRADE_BACKUP_DIR/" "$INSTALL_DIR/"
+    warn "旧版本运行组件已恢复；会议、录音和配置未改动。"
+    printf '[install][recovery] restored=%s\n' "$UPGRADE_BACKUP_DIR" >&2
+  fi
+  if [[ -n "$APP_BACKUP_DIR" && -d "$APP_BACKUP_DIR" ]]; then
+    warn "正在恢复更新前的 App"
+    rm -rf "$APP_INSTALL_PATH"
+    ditto "$APP_BACKUP_DIR" "$APP_INSTALL_PATH"
+  elif [[ "$APP_INSTALL_ATTEMPTED" -eq 1 ]]; then
+    rm -rf "$APP_INSTALL_PATH"
+  fi
+}
+
+cleanup_upgrade_backups() {
+  [[ -z "$VENV_BACKUP_DIR" || ! -d "$VENV_BACKUP_DIR" ]] || rm -rf "$VENV_BACKUP_DIR"
+  [[ -z "$APP_BACKUP_DIR" || ! -d "$APP_BACKUP_DIR" ]] || rm -rf "$APP_BACKUP_DIR"
+}
+
+simulate_failure_if_requested() {
+  local point="$1"
+  if [[ "${MEETINGBOT_INSTALL_TEST_MODE:-0}" == "1" \
+    && "${MEETINGBOT_INSTALL_TEST_FAILURE_POINT:-}" == "$point" ]]; then
+    warn "安装事务测试：在 ${point} 模拟失败"
+    return 97
+  fi
+}
+
+restart_existing_service() {
+  [[ -n "${PLIST_PATH:-}" && -f "$PLIST_PATH" ]] || return 0
+  launchctl enable "gui/$(id -u)/$SERVICE_LABEL" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true
+  launchctl kickstart -k "gui/$(id -u)/$SERVICE_LABEL" >/dev/null 2>&1 || true
+}
 
 require_command() {
   local command_name="$1"
@@ -126,7 +212,7 @@ check_codex_cli() {
     return 0
   fi
   if "$resolved" --version >/dev/null 2>&1; then
-    warn "Codex CLI 已找到但登录状态未通过：$resolved。请运行 codex login。"
+    warn "Codex CLI 已找到但登录状态未通过：${resolved}。请运行 codex login。"
   else
     warn "Codex CLI 无法正常执行：$resolved"
   fi
@@ -161,7 +247,7 @@ check_llm_backend() {
       fi
       ;;
     lm-studio|ollama)
-      info "LLM 后端配置：$provider（本地服务运行时检查模型）"
+      info "LLM 后端配置：${provider}（本地服务运行时检查模型）"
       ;;
     *)
       warn "不支持的 LLM_PROVIDER：$provider"
@@ -173,8 +259,20 @@ check_llm_backend() {
 read_env_value() {
   local key="$1"
   local env_file="$INSTALL_DIR/.env"
-  [[ -f "$env_file" ]] || return 0
-  grep -E "^${key}=" "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- || true
+  local value=""
+  if [[ -f "$env_file" ]]; then
+    value="$(grep -E "^${key}=" "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  fi
+  if [[ -z "$value" ]]; then
+    case "$key" in
+      FEISHU_APP_SECRET|HF_TOKEN|LLM_API_KEY)
+        value="$(/usr/bin/security find-generic-password \
+          -w -s "com.pgui.FeishuMeetingBotMenuBar.credentials" \
+          -a "$key" 2>/dev/null || true)"
+        ;;
+    esac
+  fi
+  printf '%s\n' "$value"
 }
 
 resolve_tool_path() {
@@ -303,11 +401,16 @@ write_env_value() {
     }
   ' "$env_file" > "$tmp_file"
   mv "$tmp_file" "$env_file"
+  chmod 600 "$env_file"
 }
 
 setup_python() {
+  local requirements_hash marker_file installed_hash python
   info "准备 Python 运行环境（策略：${DEPENDENCY_MODE}）"
   cd "$INSTALL_DIR"
+  requirements_hash="$(shasum -a 256 requirements.txt | awk '{print $1}')"
+  marker_file="$INSTALL_DIR/runtime/requirements.sha256"
+  installed_hash="$(cat "$marker_file" 2>/dev/null || true)"
 
   case "$DEPENDENCY_MODE" in
     auto|reuse|offline|online|managed-online)
@@ -318,14 +421,18 @@ setup_python() {
       ;;
   esac
 
-  if venv_is_usable; then
+  if venv_is_usable && [[ -z "$installed_hash" || "$installed_hash" == "$requirements_hash" ]]; then
     info "复用现有 Python 虚拟环境：$INSTALL_DIR/.venv"
+    mkdir -p "$(dirname "$marker_file")"
+    printf '%s\n' "$requirements_hash" > "$marker_file"
     return
   fi
 
-  if [[ "$DEPENDENCY_MODE" != "online" && "$DEPENDENCY_MODE" != "managed-online" ]]; then
+  if [[ ! -d ".venv" && "$DEPENDENCY_MODE" != "online" && "$DEPENDENCY_MODE" != "managed-online" ]]; then
     if reuse_historical_venv; then
       info "已复用历史虚拟环境，跳过依赖重新安装"
+      mkdir -p "$(dirname "$marker_file")"
+      printf '%s\n' "$requirements_hash" > "$marker_file"
       return
     fi
   fi
@@ -335,7 +442,6 @@ setup_python() {
     exit 1
   fi
 
-  local python
   if [[ "$DEPENDENCY_MODE" == "managed-online" ]]; then
     ensure_managed_python
     python="$MANAGED_PYTHON_BIN"
@@ -349,11 +455,12 @@ setup_python() {
   info "已选择 Python 解释器：$python"
 
   if [[ -d ".venv" ]]; then
-    info "重建不可用的 Python 虚拟环境"
-    "$python" -m venv --clear .venv
-  else
-    "$python" -m venv .venv
+    VENV_BACKUP_DIR="$INSTALL_DIR/.venv.before-install.$$"
+    info "暂存旧 Python 运行环境，安装失败时自动恢复"
+    mv .venv "$VENV_BACKUP_DIR"
+    simulate_failure_if_requested "after-venv-backup"
   fi
+  "$python" -m venv .venv
 
   .venv/bin/python -m pip install --upgrade pip
 
@@ -374,6 +481,8 @@ setup_python() {
     warn "Python 虚拟环境安装完成，但核心依赖校验未通过"
     exit 1
   fi
+  mkdir -p "$(dirname "$marker_file")"
+  printf '%s\n' "$requirements_hash" > "$marker_file"
 }
 
 resolve_python_bin() {
@@ -423,6 +532,9 @@ resolve_python_bin() {
 
 ensure_managed_python() {
   local uv_root uv_bin uv_python_dir uv_cache_dir installer_script managed_python
+  local uv_version uv_installer_sha256 actual_sha256 installed_uv_version
+  uv_version="0.11.28"
+  uv_installer_sha256="b7b3fe80cad1142a2a5794050b7db7b3291d1bac1423b0732571dd9366e8ca8b"
   uv_root="$MANAGED_RUNTIME_ROOT/uv"
   uv_bin="$uv_root/bin/uv"
   uv_python_dir="$MANAGED_RUNTIME_ROOT/python"
@@ -432,13 +544,27 @@ ensure_managed_python() {
   info "准备独立 Python 运行时"
   mkdir -p "$uv_root/bin" "$uv_python_dir" "$uv_cache_dir" "$MANAGED_RUNTIME_ROOT/tmp"
 
-  if [[ ! -x "$uv_bin" ]]; then
+  installed_uv_version="$("$uv_bin" --version 2>/dev/null | awk '{print $2}' || true)"
+  if [[ ! -x "$uv_bin" || "$installed_uv_version" != "$uv_version" ]]; then
     require_command curl "请联网后重试，安装程序需要下载独立 Python 运行时。"
-    info "下载 uv 运行时管理器"
-    curl -fsSL "https://astral.sh/uv/install.sh" -o "$installer_script"
+    info "下载固定版本 uv ${uv_version} 运行时管理器"
+    curl -fsSL --proto '=https' --tlsv1.2 \
+      "https://astral.sh/uv/${uv_version}/install.sh" -o "$installer_script"
+    actual_sha256="$(shasum -a 256 "$installer_script" | awk '{print $1}')"
+    if [[ "$actual_sha256" != "$uv_installer_sha256" ]]; then
+      rm -f "$installer_script"
+      warn "uv 安装脚本校验失败，已停止安装；请检查网络或重新下载发行包。"
+      exit 1
+    fi
     UV_UNMANAGED_INSTALL="$uv_root/bin" \
       UV_NO_MODIFY_PATH=1 \
       sh "$installer_script"
+    rm -f "$installer_script"
+    installed_uv_version="$("$uv_bin" --version 2>/dev/null | awk '{print $2}' || true)"
+    [[ "$installed_uv_version" == "$uv_version" ]] || {
+      warn "uv 安装完成但版本校验失败：${installed_uv_version:-unknown}"
+      exit 1
+    }
   fi
 
   info "下载独立 Python 3.12 运行时"
@@ -565,10 +691,11 @@ setup_env() {
 
   if [[ ! -f ".env" ]]; then
     cp .env.example .env
-    warn "已生成 $INSTALL_DIR/.env，请填写 FEISHU_APP_ID、FEISHU_APP_SECRET、HF_TOKEN，并确认纪要生成后端配置。"
+    warn "已生成基础配置。请打开 App 完成飞书、Hugging Face 和纪要后端设置；敏感凭据将保存在系统钥匙串。"
   else
     info ".env 已存在，保留现有配置"
   fi
+  chmod 600 .env
 }
 
 prepare_runtime_dirs() {
@@ -615,6 +742,12 @@ build_or_install_app() {
     info "已跳过菜单栏 App 安装"
   elif [[ -d "$APP_SOURCE" ]]; then
     info "安装菜单栏 App 到 $APP_INSTALL_PATH"
+    if [[ -d "$APP_INSTALL_PATH" ]]; then
+      APP_BACKUP_DIR="${TMPDIR:-/tmp}/meeting-bot-app-before-install.$$"
+      ditto "$APP_INSTALL_PATH" "$APP_BACKUP_DIR"
+      rm -rf "$APP_INSTALL_PATH"
+    fi
+    APP_INSTALL_ATTEMPTED=1
     if ditto "$APP_SOURCE" "$APP_INSTALL_PATH"; then
       info "菜单栏 App 已安装"
       if [[ -d "$LEGACY_APP_INSTALL_PATH" && "$LEGACY_APP_INSTALL_PATH" != "$APP_INSTALL_PATH" ]]; then
@@ -622,7 +755,8 @@ build_or_install_app() {
           warn "旧应用仍保留在 ${LEGACY_APP_INSTALL_PATH}，可手动删除。"
       fi
     else
-      warn "无法写入 /Applications。你仍可直接打开 ${APP_SOURCE}。"
+      warn "无法写入 /Applications，正在恢复此前版本。"
+      return 1
     fi
   fi
 }
@@ -631,9 +765,9 @@ env_is_ready() {
   [[ -f "$INSTALL_DIR/.env" ]] || return 1
 
   local app_id app_secret hf_token
-  app_id="$(grep -E '^FEISHU_APP_ID=' "$INSTALL_DIR/.env" | tail -1 | cut -d= -f2-)"
-  app_secret="$(grep -E '^FEISHU_APP_SECRET=' "$INSTALL_DIR/.env" | tail -1 | cut -d= -f2-)"
-  hf_token="$(grep -E '^HF_TOKEN=' "$INSTALL_DIR/.env" | tail -1 | cut -d= -f2-)"
+  app_id="$(read_env_value FEISHU_APP_ID)"
+  app_secret="$(read_env_value FEISHU_APP_SECRET)"
+  hf_token="$(read_env_value HF_TOKEN)"
 
   [[ -n "$app_id" && "$app_id" != cli_xxxxxxxxxxxxxxxx ]] &&
     [[ -n "$app_secret" && "$app_secret" != replace_with_* ]] &&
@@ -693,8 +827,8 @@ load_launch_agent() {
   fi
 
   if ! env_is_ready; then
-    warn ".env 尚未填完整，已跳过后台服务启动。"
-    warn "填写配置后，可在菜单栏 App 中点击“启动”，或运行：launchctl bootstrap gui/$(id -u) $PLIST_PATH"
+    warn "核心配置尚未填完整，已跳过后台服务启动。"
+    warn "在 App 中完成设置后，可点击“启动”继续。"
     return
   fi
 
@@ -737,21 +871,36 @@ main() {
   LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
   PLIST_PATH="$LAUNCH_AGENTS_DIR/$SERVICE_LABEL.plist"
   APP_SOURCE="$INSTALL_DIR/dist/$APP_NAME.app"
-  APP_INSTALL_PATH="/Applications/$APP_NAME.app"
-  LEGACY_APP_INSTALL_PATH="/Applications/Feishu Meeting Bot.app"
+  APP_INSTALL_PATH="${MEETINGBOT_APP_INSTALL_PATH:-/Applications/$APP_NAME.app}"
+  LEGACY_APP_INSTALL_PATH="${MEETINGBOT_LEGACY_APP_INSTALL_PATH:-/Applications/Feishu Meeting Bot.app}"
 
-  migrate_legacy_install_if_needed
+  CURRENT_STEP="安装前检查"
   print_checks
+  CURRENT_STEP="备份当前版本"
+  create_upgrade_backup
+  CURRENT_STEP="迁移旧版数据"
+  migrate_legacy_install_if_needed
+  CURRENT_STEP="部署运行组件"
   copy_project
+  simulate_failure_if_requested "after-project-copy"
+  CURRENT_STEP="准备 Python 环境"
   setup_python
+  CURRENT_STEP="保护本地配置"
   setup_env
+  CURRENT_STEP="准备数据目录"
   prepare_runtime_dirs
+  CURRENT_STEP="安装应用"
   build_or_install_app
+  simulate_failure_if_requested "after-app-install"
+  CURRENT_STEP="配置后台服务"
   write_launch_agent
+  CURRENT_STEP="启动后台服务"
   load_launch_agent
+  INSTALL_SUCCEEDED=1
+  cleanup_upgrade_backups
 
   info "安装流程完成。下一步："
-  info "1. 编辑 $INSTALL_DIR/.env，填写飞书和 Hugging Face 配置。"
+  info "1. 打开 App 完成飞书和 Hugging Face 配置；敏感凭据会存入系统钥匙串。"
   info "2. 确认纪要生成后端可用；默认 Codex 后端需完成 Codex CLI 登录。"
   info "3. 运行 bash $INSTALL_DIR/scripts/doctor.sh，确认环境通过。"
   info "4. 打开 ${APP_INSTALL_PATH}，或直接运行 ${INSTALL_DIR}/dist/${APP_NAME}.app。"

@@ -734,7 +734,7 @@ private struct MeetingLibraryView: View {
                 )
                 .lineLimit(1)
 
-                Button(store.isCancellingLocalMeeting ? "正在中止" : "中止") {
+                Button(store.isCancellingLocalMeeting ? "正在暂停" : "暂停") {
                     store.cancelLocalMeetingCreation()
                 }
                 .buttonStyle(.borderless)
@@ -816,7 +816,7 @@ private struct MeetingLibraryView: View {
             .font(.caption)
             .lineLimit(1)
             Spacer(minLength: 0)
-            Button(store.isCancellingLocalMeeting ? "正在中止" : "中止") {
+            Button(store.isCancellingLocalMeeting ? "正在暂停" : "暂停") {
                 store.cancelLocalMeetingCreation()
             }
             .buttonStyle(.borderless)
@@ -1110,7 +1110,10 @@ private struct MeetingLibraryView: View {
                         Button {
                             store.reprocessLocalMeeting(meeting)
                         } label: {
-                            Label("重新处理", systemImage: "arrow.clockwise")
+                            Label(
+                                meeting.processingStage == "paused" ? "继续处理" : "重新处理",
+                                systemImage: "arrow.clockwise"
+                            )
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(store.isCreatingLocalMeeting)
@@ -2139,7 +2142,7 @@ struct NewMeetingWindowView: View {
                         .controlSize(.small)
                     Text(store.localMeetingCreationMessage.isEmpty ? "正在处理" : store.localMeetingCreationMessage)
                         .foregroundStyle(.secondary)
-                    Button(store.isCancellingLocalMeeting ? "正在中止" : "中止") {
+                    Button(store.isCancellingLocalMeeting ? "正在暂停" : "暂停") {
                         store.cancelLocalMeetingCreation()
                     }
                     .foregroundStyle(.red)

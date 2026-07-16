@@ -248,6 +248,11 @@ enum LLMProviderOption: String, CaseIterable, Identifiable {
 }
 
 final class RuntimeConfigStore: ObservableObject {
+    private struct StorageMove {
+        let source: URL
+        let destination: URL
+    }
+
     @Published var feishuAppID = ""
     @Published var feishuAppSecret = ""
     @Published var hfToken = ""
@@ -303,7 +308,12 @@ final class RuntimeConfigStore: ObservableObject {
         )
     }
 
-    func save() {
+    @discardableResult
+    func save() -> Bool {
+        if let validationError = validateConfiguration() {
+            lastSaveMessage = validationError
+            return false
+        }
         var values = AppPaths.loadEnvValues()
         let currentRecordingsDirectory = AppPaths.resolvedDirectory(
             path: values["RECORDINGS_DIR"],
@@ -322,23 +332,27 @@ final class RuntimeConfigStore: ObservableObject {
             defaultURL: AppPaths.defaultMeetingOutputsDirectory
         )
 
+        let plannedStorageMoves: [StorageMove]
         do {
-            try migrateStorageIfNeeded(
-                from: currentRecordingsDirectory,
-                to: nextRecordingsDirectory
-            )
-            try migrateStorageIfNeeded(
-                from: currentMeetingOutputsDirectory,
-                to: nextMeetingOutputsDirectory
+            plannedStorageMoves = try storageMoves(
+                pairs: [
+                    (currentRecordingsDirectory, nextRecordingsDirectory),
+                    (currentMeetingOutputsDirectory, nextMeetingOutputsDirectory),
+                ]
             )
         } catch {
-            lastSaveMessage = "保存位置迁移失败：\(error.localizedDescription)"
-            return
+            lastSaveMessage = "保存位置检查失败：\(error.localizedDescription)"
+            return false
         }
 
+        let previousSecrets = SecureCredentialStore.values()
+        let nextSecrets = [
+            "FEISHU_APP_SECRET": feishuAppSecret,
+            "HF_TOKEN": hfToken,
+            "LLM_API_KEY": llmApiKey,
+        ]
         values["FEISHU_APP_ID"] = feishuAppID
-        values["FEISHU_APP_SECRET"] = feishuAppSecret
-        values["HF_TOKEN"] = hfToken
+        SecureCredentialStore.secretKeys.forEach { values.removeValue(forKey: $0) }
         values["ASR_ENGINE"] = asrEngine
         values["ASR_MODEL"] = asrModel
         values["ASR_LANGUAGE"] = asrLanguage
@@ -347,15 +361,12 @@ final class RuntimeConfigStore: ObservableObject {
         values["FFMPEG_BIN"] = ffmpegBin
         values["LLM_PROVIDER"] = llmProvider
         values["LLM_API_BASE"] = llmApiBase
-        values["LLM_API_KEY"] = llmApiKey
         values["LLM_MODEL"] = llmModel
         values["RECORDINGS_DIR"] = nextRecordingsDirectory.path
         values["MEETING_OUTPUT_DIR"] = nextMeetingOutputsDirectory.path
 
         let preferredOrder = [
             "FEISHU_APP_ID",
-            "FEISHU_APP_SECRET",
-            "HF_TOKEN",
             "ASR_ENGINE",
             "ASR_MODEL",
             "ASR_LANGUAGE",
@@ -364,7 +375,6 @@ final class RuntimeConfigStore: ObservableObject {
             "FFMPEG_BIN",
             "LLM_PROVIDER",
             "LLM_API_BASE",
-            "LLM_API_KEY",
             "LLM_MODEL",
             "RECORDINGS_DIR",
             "MEETING_OUTPUT_DIR",
@@ -380,52 +390,124 @@ final class RuntimeConfigStore: ObservableObject {
                 }
                 return "\(key)=\(value)"
             }
+        let previousEnvData = try? Data(contentsOf: AppPaths.envFile)
         do {
+            try SecureCredentialStore.replace(with: nextSecrets)
             try lines.joined(separator: "\n")
                 .appending("\n")
                 .write(to: AppPaths.envFile, atomically: true, encoding: .utf8)
-            lastSaveMessage = "配置已保存"
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: AppPaths.envFile.path
+            )
+            try executeStorageMoves(plannedStorageMoves)
+            lastSaveMessage = "配置已保存，敏感凭据已写入系统钥匙串"
+            return true
         } catch {
+            try? SecureCredentialStore.replace(with: previousSecrets)
+            if let previousEnvData {
+                try? previousEnvData.write(to: AppPaths.envFile, options: .atomic)
+            } else {
+                try? FileManager.default.removeItem(at: AppPaths.envFile)
+            }
             lastSaveMessage = "配置保存失败：\(error.localizedDescription)"
+            return false
         }
+    }
+
+    private func validateConfiguration() -> String? {
+        let fields = [
+            feishuAppID, feishuAppSecret, hfToken, asrEngine, asrModel,
+            asrLanguage, diarizationModel, codexBin, ffmpegBin, llmProvider,
+            llmApiBase, llmApiKey, llmModel, recordingsDirectory,
+            meetingOutputsDirectory,
+        ]
+        if fields.contains(where: { $0.contains("\n") || $0.contains("\r") }) {
+            return "配置内容不能包含换行符。"
+        }
+
+        let provider = LLMProviderOption(rawValue: llmProvider) ?? .codex
+        let base = llmApiBase.trimmingCharacters(in: .whitespacesAndNewlines)
+        if provider.usesHTTPAPI, !base.isEmpty {
+            guard let url = URL(string: base), url.host != nil else {
+                return "LLM API 地址无效，请填写完整地址。"
+            }
+            let host = url.host?.lowercased() ?? ""
+            let isLocal = host == "127.0.0.1" || host == "localhost" || host == "::1"
+            if url.scheme?.lowercased() != "https" && !isLocal {
+                return "远程 LLM API 必须使用 HTTPS；HTTP 仅允许连接本机服务。"
+            }
+        }
+        return nil
     }
 
     private func normalizedStoragePath(_ rawValue: String?, defaultURL: URL) -> String {
         AppPaths.resolvedDirectory(path: rawValue, defaultURL: defaultURL).path
     }
 
-    private func migrateStorageIfNeeded(from source: URL, to destination: URL) throws {
+    private func storageMoves(pairs: [(URL, URL)]) throws -> [StorageMove] {
         let fileManager = FileManager.default
-        let source = source.standardizedFileURL
-        let destination = destination.standardizedFileURL
-        guard source != destination else {
+        var moves: [StorageMove] = []
+        var destinations = Set<String>()
+        for pair in pairs {
+            let source = pair.0.standardizedFileURL
+            let destination = pair.1.standardizedFileURL
             try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
-            return
+            guard source != destination, AppPaths.exists(source) else {
+                continue
+            }
+            let items = try fileManager.contentsOfDirectory(
+                at: source,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+            for item in items {
+                let target = destination.appendingPathComponent(item.lastPathComponent)
+                guard !fileManager.fileExists(atPath: target.path),
+                      destinations.insert(target.standardizedFileURL.path).inserted else {
+                    throw NSError(
+                        domain: "MeetingBotStorage",
+                        code: 1,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "目标目录已存在同名项目：\(item.lastPathComponent)"
+                        ]
+                    )
+                }
+                moves.append(StorageMove(source: item, destination: target))
+            }
         }
+        return moves
+    }
 
-        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
-        guard AppPaths.exists(source) else {
-            return
-        }
-
-        let items = try fileManager.contentsOfDirectory(
-            at: source,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
-        for item in items {
-            let target = destination.appendingPathComponent(item.lastPathComponent)
-            guard !fileManager.fileExists(atPath: target.path) else {
+    private func executeStorageMoves(_ moves: [StorageMove]) throws {
+        let fileManager = FileManager.default
+        var completed: [StorageMove] = []
+        do {
+            for move in moves {
+                try fileManager.moveItem(at: move.source, to: move.destination)
+                completed.append(move)
+            }
+        } catch {
+            var rollbackFailures: [String] = []
+            for move in completed.reversed() {
+                do {
+                    try fileManager.moveItem(at: move.destination, to: move.source)
+                } catch {
+                    rollbackFailures.append(move.destination.lastPathComponent)
+                }
+            }
+            if !rollbackFailures.isEmpty {
                 throw NSError(
                     domain: "MeetingBotStorage",
-                    code: 1,
+                    code: 2,
                     userInfo: [
                         NSLocalizedDescriptionKey:
-                            "目标目录已存在同名项目：\(item.lastPathComponent)"
+                            "迁移失败，且以下项目未能自动恢复：\(rollbackFailures.joined(separator: "、"))"
                     ]
                 )
             }
-            try fileManager.moveItem(at: item, to: target)
+            throw error
         }
     }
 }

@@ -1,4 +1,4 @@
-# 会议纪要助手 0.3.2 安装文档
+# 会议纪要助手 0.4.0 安装文档
 
 ## 配套文档
 
@@ -50,13 +50,13 @@ codex --version
 
 1. 创建 Hugging Face Token。
 2. 接受 `pyannote/speaker-diarization-community-1` 模型使用条款。
-3. 将 Token 写入 `.env` 的 `HF_TOKEN`。
+3. 在 App 的首次启动向导或“设置 -> 高级设置”中填写 Token；0.4.0 起会保存到 macOS 系统钥匙串。
 
 ## 半自动安装
 
 ### 推荐方式：二合一图形化安装盘
 
-默认分发物为 `会议纪要助手 0.3.2 安装盘.dmg`。其中包含：
+默认分发物为 `会议纪要助手 0.4.0 安装盘.dmg`。其中包含：
 
 - `会议纪要助手.app`
 - `Applications` 快捷入口
@@ -66,7 +66,7 @@ codex --version
 
 使用方式：
 
-1. 双击打开 `会议纪要助手 0.3.2 安装盘.dmg`。
+1. 双击打开 `会议纪要助手 0.4.0 安装盘.dmg`。
 2. 将 `会议纪要助手.app` 拖入 `Applications`。
 3. 在“应用程序”中首次打开 App。
 4. App 会自动判断当前用户目录中是否已有安装：
@@ -93,7 +93,7 @@ codex --version
 - 如果缺少 `ffmpeg`、LibreOffice 或默认后端所需的 Codex CLI，首次启动安装窗口会提供“自动安装缺失工具”：
   - `ffmpeg` 和 LibreOffice 通过 Homebrew 安装。
   - Codex CLI 可自动安装，但登录仍需本人完成；若改用其他 LLM 后端，则按对应服务填写 API 地址、Key 和模型。
-  - 若机器尚无 Homebrew，系统可能要求再完成一次确认。
+  - 若机器尚无 Homebrew，App 会提供 `brew.sh` 官方入口；为避免未经确认执行网络脚本，不会自动安装 Homebrew。完成官方安装后返回重试即可。
 - 首次启动安装仍需要网络下载 Python 依赖；若本机没有 Python 3.12+，可由 App 自动在线准备独立运行时。
 - 当前安装包未做 Developer ID 签名和公证；首次在其他电脑上打开时，macOS 可能会给出安全提示。
 
@@ -105,7 +105,7 @@ codex --version
 - `reuse`：只复用已有 `.venv`，适合升级或已提前准备好环境的电脑。
 - `offline`：只从 `wheelhouse/` 离线安装，适合封闭网络或批量分发。
 - `online`：强制联网创建/更新虚拟环境。
-- `managed-online`：自动在线准备独立 Python 3.12 运行时，再创建项目专用虚拟环境。
+- `managed-online`：通过固定版本且校验安装脚本 SHA-256 的 uv 自动准备独立 Python 3.12 运行时，再创建项目专用虚拟环境。
 
 命令行示例：
 
@@ -187,13 +187,17 @@ bash "$HOME/Library/Application Support/meeting-bot/scripts/doctor.sh"
 
 ## 从旧版本升级
 
-如果已经安装并运行过旧版，仍然优先使用 `会议纪要助手 0.3.2 安装盘.dmg`。把新版 App 拖入 `Applications` 覆盖旧版后，再打开 App，程序会自动识别为升级路径；如果旧版仍在 `$HOME/Library/Application Support/meetin-bot`、`$HOME/Library/Application Support/feishu-meeting-bot`、`$HOME/meetin-bot`、`$HOME/meeting-bot` 或 `$HOME/feishu-meeting-bot`，会把 `.env`、虚拟环境和用户数据迁移到新的 `$HOME/Library/Application Support/meeting-bot`，并把旧根目录下的日志迁到 `$HOME/Library/Logs/meeting-bot`。
+如果已经安装并运行过旧版，仍然优先使用 `会议纪要助手 0.4.0 安装盘.dmg`。把新版 App 拖入 `Applications` 覆盖旧版后，再打开 App，程序会自动识别为升级路径；如果旧版仍在 `$HOME/Library/Application Support/meetin-bot`、`$HOME/Library/Application Support/feishu-meeting-bot`、`$HOME/meetin-bot`、`$HOME/meeting-bot` 或 `$HOME/feishu-meeting-bot`，会把 `.env`、虚拟环境和用户数据迁移到新的 `$HOME/Library/Application Support/meeting-bot`，并把旧根目录下的日志迁到 `$HOME/Library/Logs/meeting-bot`。
+
+0.4.0 的升级过程会分别备份运行组件、Python 环境和已安装 App。任一阶段失败时会自动恢复旧版，`sessions/`、`downloads/`、`library/`、运行状态和本地配置不会被覆盖；安装窗口会显示失败阶段与恢复结果。
 
 它会在保留 `.env`、已有保存位置、历史会议、日志、`library/` 和本地模板的前提下更新程序文件、菜单栏 App 与 LaunchAgent。详细步骤见 `docs/UPGRADE_GUIDE.md`。
 
 ## 填写本地配置
 
-安装完成后编辑：
+推荐在 App 的首次启动向导或“设置 -> 高级设置”中填写配置。0.4.0 起，飞书 App Secret、Hugging Face Token 和 LLM API Key 会写入 macOS 系统钥匙串；`.env` 只保留非敏感运行参数，并限制为当前用户读写。
+
+命令行安装仍兼容直接编辑：
 
 ```bash
 $HOME/Library/Application Support/meeting-bot/.env
@@ -277,7 +281,7 @@ bash scripts/build_setup_package.sh
 
 - 重新构建菜单栏 App。
 - 排除 `.git`、本地运行数据和密钥，并在完整安装时清理旧 App 资源残留。
-- 生成默认交付物 `dist/会议纪要助手 0.3.2 安装盘.dmg`。
+- 生成默认交付物 `dist/会议纪要助手 0.4.0 安装盘.dmg`。
 - 把安装与升级说明、使用说明和更新记录一并放入安装盘。
 - 同步在 `dist/` 下生成线程交接汇总。
 
@@ -327,7 +331,7 @@ bash "$HOME/Library/Application Support/meeting-bot/scripts/install.sh"
 bash "$HOME/Library/Application Support/meeting-bot/scripts/doctor.sh"
 ```
 
-若 `.env` 仍是占位配置，先填写后再启动服务。0.3.2 版本的 App 在点击“启动”或“重启”时，会先尝试恢复被禁用的 LaunchAgent，再执行加载和启动；如果旧版本曾经把服务禁用过，升级后也可以自行恢复。
+若核心配置仍是占位值，先在 App 中完成设置再启动服务。0.4.0 版本的 App 在点击“启动”或“重启”时，会先尝试恢复被禁用的 LaunchAgent，再执行加载和启动；如果旧版本曾经把服务禁用过，升级后也可以自行恢复。
 
 ### PDF 未生成
 

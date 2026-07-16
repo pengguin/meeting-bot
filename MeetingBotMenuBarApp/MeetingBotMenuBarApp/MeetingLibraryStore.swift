@@ -54,6 +54,9 @@ struct MeetingRecord: Identifiable, Equatable {
 
     var versionDisplayName: String {
         if isTemporary {
+            if processingStage == "paused" {
+                return "已暂停"
+            }
             return canRetryReport ? "待生成纪要" : "处理中"
         }
         return version == "named" ? "实名版" : "匿名版"
@@ -307,6 +310,7 @@ final class MeetingLibraryStore: ObservableObject {
     private let fileManager = FileManager.default
     private var lastSessionsDirectoryModificationDate: Date?
     private var localMeetingProcess: Process?
+    private var pendingProgressReload: DispatchWorkItem?
 
     init() {
         reload()
@@ -1008,10 +1012,15 @@ final class MeetingLibraryStore: ObservableObject {
         if let speakerMapURL {
             arguments.append(contentsOf: ["--speaker-map-file", speakerMapURL.path])
         }
+        if let formats = decodeLocalMeetingRequest(in: meeting.sessionURL)?.formats,
+           !formats.isEmpty {
+            arguments.append(contentsOf: ["--formats", formats.sorted().joined(separator: ",")])
+        }
         let process = Process()
         process.executableURL = python
         process.arguments = arguments
         process.currentDirectoryURL = AppPaths.projectRoot
+        process.environment = AppPaths.runtimeEnvironment()
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -1090,6 +1099,7 @@ final class MeetingLibraryStore: ObservableObject {
             normalizedFormat,
         ]
         process.currentDirectoryURL = AppPaths.projectRoot
+        process.environment = AppPaths.runtimeEnvironment()
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -1205,7 +1215,9 @@ final class MeetingLibraryStore: ObservableObject {
             audioURL: audioURL,
             transcriptURL: nil,
             templateID: templateID.isEmpty ? "auto" : templateID,
-            exportFormats: ["html", "docx"]
+            exportFormats: Set(
+                decodeLocalMeetingRequest(in: meeting.sessionURL)?.formats ?? ["html", "docx"]
+            )
         )
         createLocalMeeting(request: request, reuseSessionURL: meeting.sessionURL)
     }
@@ -1260,6 +1272,7 @@ final class MeetingLibraryStore: ObservableObject {
         process.executableURL = python
         process.arguments = arguments
         process.currentDirectoryURL = AppPaths.projectRoot
+        process.environment = AppPaths.runtimeEnvironment()
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -1318,10 +1331,10 @@ final class MeetingLibraryStore: ObservableObject {
                 let trimmedStderr = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if self.isCancellingLocalMeeting {
                     self.isCancellingLocalMeeting = false
-                    self.localMeetingCreationMessage = ""
+                    self.localMeetingCreationMessage = "处理已暂停，可在会议库中继续"
                     self.localMeetingCreationError = nil
                     self.writeIdleRuntimeStatus()
-                    // 中止会删除半成品会话目录，刷新库移除残留的草稿条目。
+                    // 暂停保留会话及阶段产物，刷新会议库展示继续入口。
                     self.reload(forceScan: true)
                     completion(nil)
                 } else if process.terminationStatus == 0,
@@ -1372,7 +1385,7 @@ final class MeetingLibraryStore: ObservableObject {
         }
 
         isCancellingLocalMeeting = true
-        localMeetingCreationMessage = "正在中止处理"
+        localMeetingCreationMessage = "正在暂停处理"
 
         // create_local_meeting.py 已通过 setsid 自成进程组；
         // 整组发信号可同时结束 ffmpeg、LLM、LibreOffice 等子进程。
@@ -1403,11 +1416,24 @@ final class MeetingLibraryStore: ObservableObject {
         // 并在新增过程中跟随选中该草稿，让用户看到实时处理阶段。
         if let sessionID = progress["session_id"] as? String,
            !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            reload(forceScan: true)
+            scheduleProgressReload(selecting: sessionID)
             if isCreatingLocalMeeting || selectedMeetingID == nil || selectedMeetingID == sessionID {
                 selectMeeting(sessionID: sessionID)
             }
         }
+    }
+
+    private func scheduleProgressReload(selecting sessionID: String) {
+        pendingProgressReload?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.reload(forceScan: true)
+            if self.isCreatingLocalMeeting || self.selectedMeetingID == nil || self.selectedMeetingID == sessionID {
+                self.selectMeeting(sessionID: sessionID)
+            }
+        }
+        pendingProgressReload = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     private func currentRuntimeStatusPayload() -> [String: Any]? {
@@ -1439,32 +1465,7 @@ final class MeetingLibraryStore: ObservableObject {
         return errno == EWOULDBLOCK
     }
 
-    /// 中止后若 SIGKILL 抢在脚本自身清理之前，半成品会话目录会残留；
-    /// 根据状态文件记录的 session_dir 兜底删除。
-    private func cleanupCancelledLocalMeetingArtifacts() {
-        guard let payload = currentRuntimeStatusPayload(),
-              (payload["source"] as? String) == "local_meeting",
-              (payload["task_status"] as? String) == "processing",
-              let sessionDir = payload["session_dir"] as? String,
-              !sessionDir.isEmpty else {
-            return
-        }
-
-        let sessionURL = URL(fileURLWithPath: sessionDir).standardizedFileURL
-        let sessionsRoot = AppPaths.sessionsDirectory.standardizedFileURL
-        let rootPrefix = sessionsRoot.path.hasSuffix("/")
-            ? sessionsRoot.path
-            : sessionsRoot.path + "/"
-        guard sessionURL.path.hasPrefix(rootPrefix),
-              sessionURL.path != sessionsRoot.path else {
-            return
-        }
-        try? fileManager.removeItem(at: sessionURL)
-    }
-
     private func writeIdleRuntimeStatus() {
-        cleanupCancelledLocalMeetingArtifacts()
-
         if let payload = currentRuntimeStatusPayload(),
            (payload["source"] as? String) == "feishu_bot",
            (payload["task_status"] as? String) == "processing" {
@@ -1495,7 +1496,7 @@ final class MeetingLibraryStore: ObservableObject {
             )
             try data.write(to: statusURL, options: .atomic)
         } catch {
-            lastErrorMessage = "处理已中止，但状态栏重置失败：\(error.localizedDescription)"
+            lastErrorMessage = "处理已暂停，但状态栏重置失败：\(error.localizedDescription)"
         }
     }
 
@@ -1638,6 +1639,15 @@ final class MeetingLibraryStore: ObservableObject {
 
     private func loadMeetingRecord(from sessionURL: URL, localMeetingProcessActive: Bool) -> MeetingRecord? {
         let sessionID = sessionURL.lastPathComponent
+        let sessionFiles = (try? fileManager.contentsOfDirectory(
+            at: sessionURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let state = decodeLocalMeetingState(in: sessionURL)
+        let request = decodeLocalMeetingRequest(in: sessionURL)
+        let isIncompleteLocalMeeting = (state != nil || request != nil)
+            && state?.taskStatus != "done"
         let reportURL = preferredFile(
             in: sessionURL,
             matching: ["report_named.json", "report_anon.json"]
@@ -1655,9 +1665,10 @@ final class MeetingLibraryStore: ObservableObject {
             in: sessionURL,
             matching: ["transcript_with_speaker_raw.json"]
         )
-        let audioURL = preferredAudioFile(in: sessionURL)
+        let audioURL = preferredAudioFile(in: sessionFiles)
 
-        if let reportURL,
+        if !isIncompleteLocalMeeting,
+           let reportURL,
            let report = decodeReport(at: reportURL) {
             return MeetingRecord(
                 id: sessionID,
@@ -1674,10 +1685,10 @@ final class MeetingLibraryStore: ObservableObject {
                 transcript: transcript,
                 detectedSpeakers: detectedSpeakers,
                 createdAt: DateDisplay.sessionDate(from: sessionID),
-                latestPDFURL: latestFile(in: sessionURL, pathExtension: "pdf"),
-                latestDOCXURL: latestFile(in: sessionURL, pathExtension: "docx"),
-                latestHTMLURL: latestFile(in: sessionURL, pathExtension: "html"),
-                latestMDURL: latestMarkdownSummary(in: sessionURL),
+                latestPDFURL: latestFile(in: sessionFiles, pathExtension: "pdf"),
+                latestDOCXURL: latestFile(in: sessionFiles, pathExtension: "docx"),
+                latestHTMLURL: latestFile(in: sessionFiles, pathExtension: "html"),
+                latestMDURL: latestMarkdownSummary(in: sessionFiles),
                 transcriptURL: transcriptURL,
                 transcriptSegmentsURL: transcriptSegmentsURL,
                 audioURL: audioURL,
@@ -1692,8 +1703,6 @@ final class MeetingLibraryStore: ObservableObject {
         }
 
         // 没有完整 report：尝试作为「草稿会议」识别（处理中或纪要生成失败）。
-        let state = decodeLocalMeetingState(in: sessionURL)
-        let request = decodeLocalMeetingRequest(in: sessionURL)
         guard state != nil || request != nil || transcriptURL != nil else {
             return nil
         }
@@ -1714,7 +1723,8 @@ final class MeetingLibraryStore: ObservableObject {
         // 进程已退出（锁空闲）但状态仍停在 processing → 视为陈旧（崩溃/被杀），可重试/重处理。
         let isStaleProcessing = rawTaskStatus == "processing" && !localMeetingProcessActive
         let isError = rawTaskStatus == "error"
-        let isNotRunning = isError || rawTaskStatus == nil || isStaleProcessing
+        let isPaused = rawTaskStatus == "paused"
+        let isNotRunning = isError || isPaused || rawTaskStatus == nil || isStaleProcessing
         let stage = state?.stage ?? "pending"
         let baseMessage = state?.message
             ?? (transcriptURL == nil ? "正在准备会议材料" : "转录稿已生成，等待生成纪要")
@@ -1723,6 +1733,8 @@ final class MeetingLibraryStore: ObservableObject {
         let displayMessage: String
         if isError {
             displayMessage = "新增会议失败"
+        } else if isPaused {
+            displayMessage = "处理已暂停，可继续执行"
         } else if isStaleProcessing {
             displayMessage = "处理似乎已中断"
         } else {
@@ -1751,10 +1763,10 @@ final class MeetingLibraryStore: ObservableObject {
             transcript: transcript,
             detectedSpeakers: detectedSpeakers,
             createdAt: DateDisplay.sessionDate(from: sessionID),
-            latestPDFURL: latestFile(in: sessionURL, pathExtension: "pdf"),
-            latestDOCXURL: latestFile(in: sessionURL, pathExtension: "docx"),
-            latestHTMLURL: latestFile(in: sessionURL, pathExtension: "html"),
-            latestMDURL: latestMarkdownSummary(in: sessionURL),
+            latestPDFURL: latestFile(in: sessionFiles, pathExtension: "pdf"),
+            latestDOCXURL: latestFile(in: sessionFiles, pathExtension: "docx"),
+            latestHTMLURL: latestFile(in: sessionFiles, pathExtension: "html"),
+            latestMDURL: latestMarkdownSummary(in: sessionFiles),
             transcriptURL: transcriptURL,
             transcriptSegmentsURL: transcriptSegmentsURL,
             audioURL: audioURL,
@@ -1809,30 +1821,14 @@ final class MeetingLibraryStore: ObservableObject {
         return nil
     }
 
-    private func latestFile(in directory: URL, pathExtension: String) -> URL? {
-        guard let files = try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
-
+    private func latestFile(in files: [URL], pathExtension: String) -> URL? {
         return files
             .filter { $0.pathExtension.lowercased() == pathExtension }
             .sorted(by: isNewerFile)
             .first
     }
 
-    private func latestMarkdownSummary(in directory: URL) -> URL? {
-        guard let files = try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
-
+    private func latestMarkdownSummary(in files: [URL]) -> URL? {
         return files
             .filter {
                 $0.pathExtension.lowercased() == "md"
@@ -1847,15 +1843,7 @@ final class MeetingLibraryStore: ObservableObject {
         return name.contains("匿名版") || name.contains("实名版")
     }
 
-    private func preferredAudioFile(in directory: URL) -> URL? {
-        guard let files = try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
-
+    private func preferredAudioFile(in files: [URL]) -> URL? {
         return files
             .filter {
                 ["m4a", "mp3", "wav", "aac", "flac", "ogg", "opus", "mp4", "mov", "webm"]

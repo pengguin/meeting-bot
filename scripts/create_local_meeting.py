@@ -22,7 +22,13 @@ os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
 from chinese_text import simplify_chinese
-from local_meeting_drafts import write_local_meeting_request, write_local_meeting_state
+from llm_backend import SchemaValidationError, validate_json_data, write_json_atomic
+from local_meeting_drafts import (
+    load_local_meeting_checkpoint,
+    write_local_meeting_checkpoint,
+    write_local_meeting_request,
+    write_local_meeting_state,
+)
 from asr_runtime import asr_runtime_description, create_asr_model, transcribe_with_asr_model
 from diarization_runtime import configure_diarization_pipeline, run_diarization_pipeline
 from meetingbot_config import (
@@ -41,8 +47,14 @@ from report_export import (
     generate_formal_minutes_docx,
     generate_formal_minutes_html,
     generate_formal_minutes_markdown,
+    safe_filename_component,
 )
-from report_generation import classify_meeting_type, generate_structured_report
+from report_generation import (
+    classify_meeting_type,
+    ensure_classification_schema,
+    ensure_report_schema,
+    generate_structured_report,
+)
 from session_store import (
     create_session,
     create_text_session,
@@ -130,6 +142,18 @@ def write_runtime_status(
     if session_path is not None:
         write_local_meeting_state(session_path, payload)
     emit_progress(stage, message, session_path)
+
+
+def load_json(path: Path, expected_type):
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, expected_type) else None
+
+
+def checkpoint(session_path: Path, stage: str, completed_stage: Optional[str] = None) -> None:
+    write_local_meeting_checkpoint(session_path, stage, completed_stage)
 
 
 def write_meeting_done_event(
@@ -413,12 +437,15 @@ def create_session_from_transcript(
     title: str,
     transcript_path: Path,
     audio_path: Optional[Path],
+    template: str,
+    formats: set[str],
 ) -> tuple[Path, str, Dict[str, str]]:
     transcript_text = read_text_file(transcript_path)
     if audio_path is not None:
         session_path = create_session(audio_path)
     else:
         session_path = create_text_session(transcript_path.name)
+    write_local_meeting_request(session_path, title, template, formats)
 
     write_session_metadata(
         session_path,
@@ -447,6 +474,7 @@ def create_session_from_transcript(
         json.dumps(speaker_map, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    checkpoint(session_path, "transcript_ready", "transcript_ready")
     return session_path, transcript_markdown, speaker_map
 
 
@@ -454,9 +482,10 @@ def create_session_from_audio(
     title: str,
     audio_path: Path,
     session_path: Optional[Path] = None,
+    template: str = "auto",
+    formats: Optional[set[str]] = None,
 ) -> tuple[Path, str, Dict[str, str]]:
-    from pyannote.audio import Pipeline
-
+    formats = formats or {"html", "docx"}
     if session_path is None:
         session_path = create_session(audio_path)
         write_session_metadata(
@@ -472,29 +501,69 @@ def create_session_from_audio(
         # 草稿「重新处理」：复用已有会话目录及其中的原始录音，原地重跑整条流水线，
         # 不新建会话目录、不复制录音，避免产生第二条草稿或丢失录音。
         session_audio = audio_path
-    write_runtime_status("processing", "converting_audio", "正在转换音频", session_path)
-    analysis_audio = convert_audio_to_wav_16k_mono(session_audio, session_path)
+    write_local_meeting_request(session_path, title, template, formats)
 
-    write_runtime_status("processing", "loading_models", "正在加载转写模型", session_path)
-    whisper_model = create_asr_model()
-    emit_progress("loading_models", f"转写模型已启用加速：{asr_runtime_description()}")
-    diarization_pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL, token=HF_TOKEN)
-    diarization_device = configure_diarization_pipeline(diarization_pipeline)
-    emit_progress("loading_models", f"说话人分离模型使用 {diarization_device.type.upper()} 运行")
+    analysis_audio = session_path / "analysis_audio_16k_mono.wav"
+    if not analysis_audio.exists():
+        write_runtime_status("processing", "converting_audio", "正在转换音频", session_path)
+        checkpoint(session_path, "converting_audio")
+        analysis_audio = convert_audio_to_wav_16k_mono(session_audio, session_path)
+        checkpoint(session_path, "audio_converted", "audio_converted")
+    else:
+        emit_progress("resuming", "已复用完成的音频预处理", session_path)
 
-    write_runtime_status("processing", "diarization", "正在进行说话人分离", session_path)
-    diarization_segments = diarize_audio(analysis_audio, session_path, diarization_pipeline)
-    write_runtime_status("processing", "transcribing", "正在语音转写", session_path)
-    transcript_segments = transcribe_audio(analysis_audio, session_path, whisper_model)
-    write_runtime_status("processing", "aligning_speakers", "正在对齐说话人与转录文本", session_path)
-    merged_segments = assign_speakers_to_transcript(transcript_segments, diarization_segments, session_path)
-    speaker_map = build_default_speaker_map(merged_segments, session_path)
-    transcript_markdown = render_transcript_markdown(
-        merged_segments,
-        speaker_map,
-        "完整转录稿（匿名说话人版）",
-    )
-    (session_path / "transcript_anon.md").write_text(transcript_markdown, encoding="utf-8")
+    diarization_path = session_path / "diarization.json"
+    diarization_segments = load_json(diarization_path, list)
+    if not diarization_segments:
+        write_runtime_status("processing", "loading_models", "正在加载说话人分离模型", session_path)
+        checkpoint(session_path, "loading_diarization_model")
+        from pyannote.audio import Pipeline
+
+        diarization_pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL, token=HF_TOKEN)
+        diarization_device = configure_diarization_pipeline(diarization_pipeline)
+        emit_progress("loading_models", f"说话人分离模型使用 {diarization_device.type.upper()} 运行")
+        write_runtime_status("processing", "diarization", "正在进行说话人分离", session_path)
+        checkpoint(session_path, "diarization")
+        diarization_segments = diarize_audio(analysis_audio, session_path, diarization_pipeline)
+        checkpoint(session_path, "diarization_done", "diarization")
+        del diarization_pipeline
+    else:
+        emit_progress("resuming", "已复用完成的说话人分离结果", session_path)
+
+    transcript_segments_path = session_path / "transcript_segments.json"
+    transcript_segments = load_json(transcript_segments_path, list)
+    if not transcript_segments:
+        write_runtime_status("processing", "loading_models", "正在加载转写模型", session_path)
+        checkpoint(session_path, "loading_asr_model")
+        whisper_model = create_asr_model()
+        emit_progress("loading_models", f"转写模型已启用加速：{asr_runtime_description()}")
+        write_runtime_status("processing", "transcribing", "正在语音转写", session_path)
+        checkpoint(session_path, "transcribing")
+        transcript_segments = transcribe_audio(analysis_audio, session_path, whisper_model)
+        checkpoint(session_path, "transcription_done", "transcribing")
+        del whisper_model
+    else:
+        emit_progress("resuming", "已复用完成的语音转写结果", session_path)
+
+    merged_path = session_path / "transcript_with_speaker_raw.json"
+    merged_segments = load_json(merged_path, list)
+    speaker_map = load_json(session_path / "speaker_map.json", dict)
+    transcript_path = session_path / "transcript_anon.md"
+    if not merged_segments or not speaker_map or not transcript_path.exists():
+        write_runtime_status("processing", "aligning_speakers", "正在对齐说话人与转录文本", session_path)
+        checkpoint(session_path, "aligning_speakers")
+        merged_segments = assign_speakers_to_transcript(transcript_segments, diarization_segments, session_path)
+        speaker_map = build_default_speaker_map(merged_segments, session_path)
+        transcript_markdown = render_transcript_markdown(
+            merged_segments,
+            speaker_map,
+            "完整转录稿（匿名说话人版）",
+        )
+        transcript_path.write_text(transcript_markdown, encoding="utf-8")
+        checkpoint(session_path, "transcript_ready", "transcript_ready")
+    else:
+        transcript_markdown = transcript_path.read_text(encoding="utf-8")
+        emit_progress("resuming", "已复用完成的转录稿", session_path)
     return session_path, transcript_markdown, speaker_map
 
 
@@ -506,10 +575,19 @@ def generate_outputs(
     template: str,
     formats: set[str],
 ) -> Dict:
-    if template == "auto":
+    classification_path = session_path / "classification.json"
+    classification = load_json(classification_path, dict)
+    if classification:
+        try:
+            validate_json_data(classification, ensure_classification_schema())
+        except (SchemaValidationError, OSError, ValueError):
+            classification = None
+    if template == "auto" and not classification:
         write_runtime_status("processing", "classifying_meeting", "正在识别会议类型", session_path)
+        checkpoint(session_path, "classifying_meeting")
         classification = classify_meeting_type(transcript_markdown, session_path)
-    else:
+        checkpoint(session_path, "classification_done", "classifying_meeting")
+    elif template != "auto":
         if template not in get_allowed_templates():
             raise RuntimeError(f"未知会议类型：{template}")
         classification = {
@@ -517,26 +595,38 @@ def generate_outputs(
             "confidence": 1.0,
             "reason": "用户在本地新增会议中手动指定模板。",
         }
-        (session_path / "classification.json").write_text(
-            json.dumps(classification, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        write_json_atomic(session_path / "classification.json", classification)
 
-    write_runtime_status("processing", "generating_report", "正在生成会议纪要", session_path)
-    report = generate_structured_report(
-        transcript_markdown=transcript_markdown,
-        classification=classification,
-        session_path=session_path,
-        named=False,
-    )
+    report_path = session_path / "report_anon.json"
+    report = load_json(report_path, dict)
+    if report:
+        try:
+            validate_json_data(report, ensure_report_schema())
+            if (
+                report.get("meeting_type") != classification["template"]
+                or report.get("version") != "anonymous"
+            ):
+                report = None
+        except (SchemaValidationError, OSError, ValueError, KeyError):
+            report = None
+    if not report:
+        write_runtime_status("processing", "generating_report", "正在生成会议纪要", session_path)
+        checkpoint(session_path, "generating_report")
+        report = generate_structured_report(
+            transcript_markdown=transcript_markdown,
+            classification=classification,
+            session_path=session_path,
+            named=False,
+        )
+        checkpoint(session_path, "report_done", "generating_report")
+    else:
+        emit_progress("resuming", "已复用完成的会议纪要内容", session_path)
     if title.strip():
         report["report_title"] = title.strip()
-        (session_path / "report_anon.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        write_json_atomic(session_path / "report_anon.json", report)
 
     write_runtime_status("processing", "generating_report_exports", "正在导出纪要文件", session_path)
+    checkpoint(session_path, "generating_report_exports")
     docx_path = None
     html_path = None
     md_path = None
@@ -553,7 +643,7 @@ def generate_outputs(
         html_output = (
             docx_path.with_suffix(".html")
             if docx_path is not None
-            else session_path / f"{report.get('report_title', '会议纪要')}_匿名版.html"
+            else session_path / f"{safe_filename_component(report.get('report_title', '会议纪要'))}_匿名版.html"
         )
         html_path = generate_formal_minutes_html(
             report=report,
@@ -565,7 +655,7 @@ def generate_outputs(
         markdown_output = (
             docx_path.with_suffix(".md")
             if docx_path is not None
-            else session_path / f"{report.get('report_title', '会议纪要')}_匿名版.md"
+            else session_path / f"{safe_filename_component(report.get('report_title', '会议纪要'))}_匿名版.md"
         )
         md_path = generate_formal_minutes_markdown(
             report=report,
@@ -580,6 +670,7 @@ def generate_outputs(
     if "docx" not in formats and docx_path is not None:
         docx_path.unlink(missing_ok=True)
         docx_path = None
+    checkpoint(session_path, "done", "done")
 
     write_runtime_status(
         "done",
@@ -654,6 +745,8 @@ def main() -> None:
                 args.title,
                 transcript_path,
                 audio_path,
+                args.template,
+                formats,
             )
         else:
             assert audio_path is not None
@@ -662,6 +755,8 @@ def main() -> None:
                 args.title,
                 audio_path,
                 reuse_session,
+                args.template,
+                formats,
             )
         # 转录稿已就绪、生成纪要之前落盘请求参数：若后续生成纪要失败，
         # 会话会作为草稿保留，可凭此参数复用转录稿重试。
@@ -676,13 +771,15 @@ def main() -> None:
         )
         print(json.dumps(result, ensure_ascii=False))
     except (KeyboardInterrupt, SystemExit):
-        # 用户中止：清理本次创建的半成品会话目录，避免残留占用磁盘。
+        # 0.4 起中止等同暂停：保留原录音和已完成阶段，稍后从检查点继续。
         if session_path is not None:
-            shutil.rmtree(session_path, ignore_errors=True)
+            previous = load_local_meeting_checkpoint(session_path)
+            checkpoint(session_path, "paused", previous.get("completed_stage", ""))
         write_runtime_status(
-            "idle",
-            "idle",
-            "新增会议处理已中止",
+            "paused" if session_path is not None else "idle",
+            "paused" if session_path is not None else "idle",
+            "处理已暂停，可在会议库中继续" if session_path is not None else "新增会议处理已中止",
+            session_path,
         )
         raise
     except Exception as error:

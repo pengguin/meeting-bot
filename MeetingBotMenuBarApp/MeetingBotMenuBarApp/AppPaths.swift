@@ -1,5 +1,75 @@
 import AppKit
 import Foundation
+import Security
+
+enum SecureCredentialStore {
+    static let service = "com.pgui.FeishuMeetingBotMenuBar.credentials"
+    static let secretKeys = ["FEISHU_APP_SECRET", "HF_TOKEN", "LLM_API_KEY"]
+
+    static func value(for key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func values() -> [String: String] {
+        secretKeys.reduce(into: [:]) { result, key in
+            if let value = value(for: key), !value.isEmpty {
+                result[key] = value
+            }
+        }
+    }
+
+    static func replace(with values: [String: String]) throws {
+        for key in secretKeys {
+            try set(values[key] ?? "", for: key)
+        }
+    }
+
+    private static func set(_ value: String, for key: String) throws {
+        let identity: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+        ]
+        let deleteStatus = SecItemDelete(identity as CFDictionary)
+        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+            throw keychainError(deleteStatus)
+        }
+        guard !value.isEmpty else {
+            return
+        }
+
+        var item = identity
+        item[kSecValueData as String] = Data(value.utf8)
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let addStatus = SecItemAdd(item as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw keychainError(addStatus)
+        }
+    }
+
+    private static func keychainError(_ status: OSStatus) -> NSError {
+        NSError(
+            domain: NSOSStatusErrorDomain,
+            code: Int(status),
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    SecCopyErrorMessageString(status, nil) as String? ?? "钥匙串操作失败"
+            ]
+        )
+    }
+}
 
 enum AppPaths {
     private static let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -86,17 +156,18 @@ enum AppPaths {
     }
 
     private static func configuredDirectory(envKey: String, defaultURL: URL) -> URL {
-        resolvedDirectory(path: loadEnvValues()[envKey], defaultURL: defaultURL)
+        resolvedDirectory(
+            path: loadEnvValues(includeSecrets: false)[envKey],
+            defaultURL: defaultURL
+        )
     }
 
-    static func loadEnvValues() -> [String: String] {
-        guard let contents = try? String(contentsOf: envFile, encoding: .utf8) else {
-            return [:]
-        }
-
-        return contents
-            .split(separator: "\n")
-            .reduce(into: [String: String]()) { result, rawLine in
+    static func loadEnvValues(includeSecrets: Bool = true) -> [String: String] {
+        var values = [String: String]()
+        if let contents = try? String(contentsOf: envFile, encoding: .utf8) {
+            values = contents
+                .split(separator: "\n")
+                .reduce(into: [String: String]()) { result, rawLine in
                 let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !line.isEmpty, !line.hasPrefix("#"),
                       let separator = line.firstIndex(of: "=") else {
@@ -108,6 +179,17 @@ enum AppPaths {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 result[key] = value
             }
+        }
+        if includeSecrets {
+            values.merge(SecureCredentialStore.values()) { _, secureValue in secureValue }
+        }
+        return values
+    }
+
+    static func runtimeEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment.merge(loadEnvValues()) { _, configuredValue in configuredValue }
+        return environment
     }
 }
 

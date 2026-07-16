@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl
 import json
 import sys
 from pathlib import Path
@@ -13,8 +14,16 @@ from report_export import (
     generate_formal_minutes_docx,
     generate_formal_minutes_html,
     generate_formal_minutes_markdown,
+    safe_filename_component,
 )
 from report_generation import generate_structured_report
+from llm_backend import write_json_atomic
+from local_meeting_drafts import (
+    runtime_timestamp,
+    write_local_meeting_checkpoint,
+    write_local_meeting_state,
+)
+from meetingbot_config import RUNTIME_DIR
 from speaker_naming import anonymous_speaker_label
 
 
@@ -117,6 +126,7 @@ def regenerate(
     template_id: str,
     speaker_overrides: dict[str, str] | None = None,
     version: str = "auto",
+    requested_formats: set[str] | None = None,
 ) -> dict:
     if version == "named":
         named = True
@@ -134,10 +144,7 @@ def regenerate(
         "confidence": 1.0,
         "reason": "用户在本地会议库中手动指定模板。",
     }
-    (session_path / "classification.json").write_text(
-        json.dumps(classification, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(session_path / "classification.json", classification)
     report = generate_structured_report(
         transcript_markdown=transcript,
         classification=classification,
@@ -145,7 +152,9 @@ def regenerate(
         named=named,
     )
 
-    formats = existing_summary_files(session_path, named=named)
+    formats = set(requested_formats or [])
+    if not formats:
+        formats = existing_summary_files(session_path, named=named)
     if not formats:
         formats = existing_summary_files(session_path, named=not named)
     if not formats:
@@ -166,7 +175,7 @@ def regenerate(
         html_output = (
             docx_path.with_suffix(".html")
             if docx_path is not None
-            else session_path / f"{report.get('report_title', '会议纪要')}_{'实名版' if named else '匿名版'}.html"
+            else session_path / f"{safe_filename_component(report.get('report_title', '会议纪要'))}_{'实名版' if named else '匿名版'}.html"
         )
         html_path = generate_formal_minutes_html(
             report=report,
@@ -178,7 +187,7 @@ def regenerate(
         markdown_output = (
             docx_path.with_suffix(".md")
             if docx_path is not None
-            else session_path / f"{report.get('report_title', '会议纪要')}_{'实名版' if named else '匿名版'}.md"
+            else session_path / f"{safe_filename_component(report.get('report_title', '会议纪要'))}_{'实名版' if named else '匿名版'}.md"
         )
         md_path = generate_formal_minutes_markdown(
             report=report,
@@ -216,6 +225,33 @@ def regenerate(
     }
 
 
+def write_draft_state(
+    session_path: Path,
+    status: str,
+    stage: str,
+    message: str,
+    result: dict | None = None,
+) -> None:
+    result = result or {}
+    write_local_meeting_state(
+        session_path,
+        {
+            "service_status": "running",
+            "task_status": status,
+            "stage": stage,
+            "message": message,
+            "session_id": session_path.name,
+            "session_dir": str(session_path),
+            "latest_pdf": result.get("pdf", ""),
+            "latest_docx": result.get("docx", ""),
+            "latest_html": result.get("html", ""),
+            "latest_md": result.get("md", ""),
+            "updated_at": runtime_timestamp(),
+            "source": "local_meeting",
+        },
+    )
+
+
 def load_speaker_overrides(raw_path: str) -> dict[str, str]:
     if not raw_path:
         return {}
@@ -251,15 +287,65 @@ def main() -> None:
         default="auto",
         help="指定重生成匿名版或实名版；默认根据现有文件和说话人标注判断。",
     )
-    args = parser.parse_args()
-    speaker_overrides = load_speaker_overrides(args.speaker_map_file)
-    result = regenerate(
-        Path(args.session),
-        args.template,
-        speaker_overrides,
-        version=args.version,
+    parser.add_argument(
+        "--formats",
+        default="",
+        help="需要重新生成的导出格式，逗号分隔；留空时沿用已有文件。",
     )
-    print(json.dumps(result, ensure_ascii=False))
+    args = parser.parse_args()
+    session_path = Path(args.session)
+    is_local_draft = (session_path / "local_meeting_request.json").exists()
+    requested_formats = {
+        item.strip().lower()
+        for item in args.formats.split(",")
+        if item.strip()
+    }
+    speaker_overrides = load_speaker_overrides(args.speaker_map_file)
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    lock_handle = (RUNTIME_DIR / "local_meeting.lock").open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_handle.close()
+        raise RuntimeError("已有会议正在处理，请等待完成后再重试")
+
+    try:
+        if is_local_draft:
+            write_draft_state(
+                session_path,
+                "processing",
+                "generating_report",
+                "正在重试生成会议纪要",
+            )
+        result = regenerate(
+            session_path,
+            args.template,
+            speaker_overrides,
+            version=args.version,
+            requested_formats=requested_formats,
+        )
+        if is_local_draft:
+            write_local_meeting_checkpoint(session_path, "done", "done")
+            write_draft_state(
+                session_path,
+                "done",
+                "done",
+                "本地新增会议已生成",
+                result,
+            )
+        print(json.dumps(result, ensure_ascii=False))
+    except Exception as error:
+        if is_local_draft:
+            write_draft_state(
+                session_path,
+                "error",
+                "generating_report",
+                f"生成纪要失败：{error}",
+            )
+        raise
+    finally:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        lock_handle.close()
 
 
 if __name__ == "__main__":

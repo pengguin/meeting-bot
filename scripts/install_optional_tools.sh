@@ -90,22 +90,9 @@ ensure_homebrew() {
     return
   fi
 
-  command -v curl >/dev/null 2>&1 || {
-    warn "缺少 curl，无法自动安装 Homebrew"
-    exit 1
-  }
-
-  info "未检测到 Homebrew，开始安装"
-  NONINTERACTIVE=1 \
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-  brew="$(brew_bin || true)"
-  [[ -n "$brew" ]] || {
-    warn "Homebrew 安装完成后仍未找到 brew"
-    exit 1
-  }
-
-  BREW_BIN="$brew"
+  warn "未检测到 Homebrew。为避免自动执行未经用户确认的网络脚本，请先从 https://brew.sh 安装 Homebrew，再返回重试。"
+  printf '[tools][error] code=HOMEBREW_REQUIRED\n' >&2
+  exit 2
 }
 
 install_ffmpeg() {

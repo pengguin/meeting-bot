@@ -569,21 +569,24 @@ struct SetupWizardWindowView: View {
                     .disabled(hasHardBlocker)
                 case .storage:
                     Button("保存并继续") {
-                        configStore.save()
-                        currentStep = .credentials
+                        if configStore.save() {
+                            currentStep = .credentials
+                        }
                     }
                 case .credentials:
                     Button("保存并继续") {
-                        configStore.save()
-                        runtimeStore.refresh()
-                        currentStep = .connectivity
+                        if configStore.save() {
+                            runtimeStore.refresh()
+                            currentStep = .connectivity
+                        }
                     }
                     .disabled(!configStore.isCoreConfigComplete)
                 case .connectivity:
                     Button("运行检查") {
-                        configStore.save()
-                        runtimeStore.refresh()
-                        wizardStore.runConnectivityChecks(config: configStore)
+                        if configStore.save() {
+                            runtimeStore.refresh()
+                            wizardStore.runConnectivityChecks(config: configStore)
+                        }
                     }
                     .disabled(wizardStore.isChecking || !configStore.isCoreConfigComplete)
 
@@ -667,7 +670,7 @@ struct SetupWizardWindowView: View {
             }
 
             TextField("ffmpeg 可执行文件", text: $configStore.ffmpegBin)
-            Text("这些配置会保存在本机 `.env` 中。Hugging Face Token 还需要对应账号已接受 pyannote 模型条款。")
+            Text("这些配置仅保存在本机，配置文件会限制为当前用户可读写。Hugging Face Token 还需要对应账号已接受 pyannote 模型条款。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

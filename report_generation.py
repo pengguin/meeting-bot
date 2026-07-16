@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Dict
 
-from llm_backend import run_llm
+from llm_backend import run_llm, write_json_atomic
 from meetingbot_config import (
     SCHEMA_DIR,
     get_allowed_templates,
@@ -34,10 +34,7 @@ def ensure_classification_schema() -> Path:
         "additionalProperties": False,
     }
 
-    schema_path.write_text(
-        json.dumps(schema, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(schema_path, schema)
     return schema_path
 
 
@@ -175,10 +172,7 @@ def ensure_report_schema() -> Path:
         "additionalProperties": False,
     }
 
-    schema_path.write_text(
-        json.dumps(schema, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(schema_path, schema)
     return schema_path
 
 
@@ -242,10 +236,7 @@ def classify_meeting_type(
         "confidence": float(confidence),
         "reason": reason,
     }
-    output_path.write_text(
-        json.dumps(classification, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(output_path, classification)
     return classification
 
 
@@ -340,8 +331,5 @@ def generate_structured_report(
         "action_item_count": len(report.get("action_items", [])),
         "open_question_count": len(report.get("open_questions", [])),
     }
-    output_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(output_path, report)
     return report

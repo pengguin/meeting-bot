@@ -13,10 +13,14 @@ HTTP 后端通过"提示词内嵌 JSON Schema + JSON mode"约束输出结构，
 """
 
 import json
+import os
 import re
 import subprocess
+import tempfile
+import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -24,6 +28,7 @@ from meetingbot_config import (
     CODEX_BIN,
     LLM_API_BASE,
     LLM_API_KEY,
+    LLM_MAX_ATTEMPTS,
     LLM_MODEL,
     LLM_PROVIDER,
     LLM_TIMEOUT_SECONDS,
@@ -46,6 +51,16 @@ DEFAULT_MODELS = {
 _SYSTEM_PROMPT = "你是一名严谨的会议纪要结构化助手，始终只输出 JSON。"
 
 
+class LLMBackendError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+class SchemaValidationError(ValueError):
+    pass
+
+
 def resolve_provider() -> str:
     if LLM_PROVIDER not in SUPPORTED_PROVIDERS:
         raise RuntimeError(
@@ -59,7 +74,14 @@ def resolve_api_base(provider: str) -> str:
     base = LLM_API_BASE or DEFAULT_API_BASES.get(provider, "")
     if not base:
         raise RuntimeError("LLM_API_BASE 为空，请在 .env 中配置 API 地址")
-    return base.rstrip("/")
+    normalized = base.rstrip("/")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("LLM_API_BASE 无效，请填写完整的 HTTP(S) 地址")
+    local_hosts = {"127.0.0.1", "localhost", "::1"}
+    if parsed.scheme != "https" and parsed.hostname.lower() not in local_hosts:
+        raise RuntimeError("远程 LLM_API_BASE 必须使用 HTTPS；HTTP 仅允许本机服务")
+    return normalized
 
 
 def resolve_model(provider: str) -> str:
@@ -123,17 +145,139 @@ def run_llm(
     """
     provider = resolve_provider()
 
-    if provider == "codex":
-        return _run_codex_cli(prompt, output_path, schema_path, timeout)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    last_error: Exception | None = None
 
-    if provider == "anthropic":
-        raw = _run_anthropic(prompt, schema_path, LLM_TIMEOUT_SECONDS)
-    else:
-        raw = _run_openai_compatible(provider, prompt, schema_path, LLM_TIMEOUT_SECONDS)
+    for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
+        temporary_output: Path | None = None
+        try:
+            if provider == "codex":
+                handle, temporary_name = tempfile.mkstemp(
+                    prefix=f".{output_path.name}.",
+                    suffix=".tmp",
+                    dir=output_path.parent,
+                )
+                os.close(handle)
+                temporary_output = Path(temporary_name)
+                temporary_output.unlink(missing_ok=True)
+                raw = _run_codex_cli(
+                    prompt, temporary_output, schema_path, timeout
+                )
+            elif provider == "anthropic":
+                raw = _run_anthropic(
+                    prompt, schema_path, LLM_TIMEOUT_SECONDS
+                )
+            else:
+                raw = _run_openai_compatible(
+                    provider, prompt, schema_path, LLM_TIMEOUT_SECONDS
+                )
 
-    text = extract_json_text(raw)
-    output_path.write_text(text, encoding="utf-8")
-    return text
+            text = extract_json_text(raw)
+            _validate_json_text(text, schema_path)
+            _write_text_atomic(output_path, text)
+            return text
+        except (json.JSONDecodeError, SchemaValidationError) as exc:
+            last_error = LLMBackendError(
+                f"纪要生成结果格式不完整：{exc}", retryable=True
+            )
+        except LLMBackendError as exc:
+            last_error = exc
+        except subprocess.TimeoutExpired as exc:
+            last_error = LLMBackendError(
+                "纪要生成超时，转录结果已保留，可稍后重试。",
+                retryable=True,
+            )
+        finally:
+            if temporary_output is not None:
+                temporary_output.unlink(missing_ok=True)
+
+        retryable = isinstance(last_error, LLMBackendError) and last_error.retryable
+        if not retryable or attempt >= LLM_MAX_ATTEMPTS:
+            break
+        time.sleep(min(2 ** (attempt - 1), 4))
+
+    if last_error is None:
+        raise RuntimeError("纪要生成失败，未返回具体原因。")
+    raise RuntimeError(str(last_error)) from last_error
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    handle, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def write_json_atomic(path: Path, data: Any) -> None:
+    _write_text_atomic(
+        path,
+        json.dumps(data, ensure_ascii=False, indent=2),
+    )
+
+
+def _validate_json_text(text: str, schema_path: Optional[Path]) -> Any:
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise SchemaValidationError("顶层内容必须是 JSON 对象")
+    validate_json_data(data, schema_path)
+    return data
+
+
+def validate_json_data(data: Any, schema_path: Optional[Path]) -> None:
+    if not isinstance(data, dict):
+        raise SchemaValidationError("顶层内容必须是 JSON 对象")
+    if schema_path is not None:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        _validate_schema_value(data, schema, path="$")
+
+
+def _validate_schema_value(value: Any, schema: Dict[str, Any], path: str) -> None:
+    expected = schema.get("type")
+    type_validators = {
+        "object": lambda item: isinstance(item, dict),
+        "array": lambda item: isinstance(item, list),
+        "string": lambda item: isinstance(item, str),
+        "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+        "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+        "boolean": lambda item: isinstance(item, bool),
+        "null": lambda item: item is None,
+    }
+    if expected in type_validators and not type_validators[expected](value):
+        raise SchemaValidationError(f"{path} 类型应为 {expected}")
+
+    if "enum" in schema and value not in schema["enum"]:
+        raise SchemaValidationError(f"{path} 的值不在允许范围内")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            raise SchemaValidationError(f"{path} 小于最小值")
+        if "maximum" in schema and value > schema["maximum"]:
+            raise SchemaValidationError(f"{path} 大于最大值")
+
+    if isinstance(value, dict):
+        required = schema.get("required", [])
+        missing = [key for key in required if key not in value]
+        if missing:
+            raise SchemaValidationError(f"{path} 缺少字段：{', '.join(missing)}")
+        properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is False:
+            extra = [key for key in value if key not in properties]
+            if extra:
+                raise SchemaValidationError(f"{path} 包含未知字段：{', '.join(extra)}")
+        for key, item in value.items():
+            if key in properties:
+                _validate_schema_value(item, properties[key], f"{path}.{key}")
+
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            _validate_schema_value(item, schema["items"], f"{path}[{index}]")
 
 
 def _run_codex_cli(
@@ -165,14 +309,29 @@ def _run_codex_cli(
     )
 
     if result.returncode != 0:
-        raise RuntimeError(
-            "Codex 执行失败。\n"
-            f"STDOUT:\n{result.stdout}\n"
-            f"STDERR:\n{result.stderr}"
-        )
+        detail = (result.stderr or result.stdout or "").strip()
+        lowered = detail.lower()
+        if any(marker in lowered for marker in ("login", "unauthorized", "token")):
+            message = "Codex CLI 尚未登录或登录已失效，请登录后在会议库重试。"
+            retryable = False
+        elif any(marker in lowered for marker in ("quota", "credit", "billing")):
+            message = "Codex 当前无可用额度，转录结果已保留，可在额度恢复后重试。"
+            retryable = False
+        elif "rate limit" in lowered or "too many requests" in lowered:
+            message = "Codex 请求过于频繁，转录结果已保留，可稍后重试。"
+            retryable = True
+        else:
+            summary = re.sub(r"\s+", " ", detail)[:500]
+            message = "Codex 生成纪要失败"
+            if summary:
+                message += f"：{summary}"
+            retryable = True
+        raise LLMBackendError(message, retryable=retryable)
 
     if not output_path.exists():
-        raise RuntimeError(f"Codex 未生成输出文件：{output_path.name}")
+        raise LLMBackendError(
+            f"Codex 未生成输出文件：{output_path.name}", retryable=True
+        )
 
     return output_path.read_text(encoding="utf-8").strip()
 
@@ -243,33 +402,44 @@ def _run_openai_compatible(
         "response_format": {"type": "json_object"},
     }
 
-    response = requests.post(
-        url, headers=_openai_headers(), json=payload, timeout=timeout
-    )
-    if response.status_code == 400 and "response_format" in response.text:
-        # 个别 OpenAI 兼容服务不支持 JSON mode，去掉后重试一次。
-        payload.pop("response_format", None)
+    try:
         response = requests.post(
             url, headers=_openai_headers(), json=payload, timeout=timeout
         )
+    except requests.RequestException as exc:
+        raise LLMBackendError(
+            f"无法连接 LLM 服务：{exc}", retryable=True
+        ) from exc
+    if response.status_code == 400 and "response_format" in response.text:
+        # 个别 OpenAI 兼容服务不支持 JSON mode，去掉后重试一次。
+        payload.pop("response_format", None)
+        try:
+            response = requests.post(
+                url, headers=_openai_headers(), json=payload, timeout=timeout
+            )
+        except requests.RequestException as exc:
+            raise LLMBackendError(
+                f"无法连接 LLM 服务：{exc}", retryable=True
+            ) from exc
 
     if response.status_code != 200:
-        raise RuntimeError(
-            f"LLM 接口调用失败（{provider} HTTP {response.status_code}）："
-            f"{response.text[:800]}"
-        )
+        raise _http_error(provider, response)
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise LLMBackendError(
+            f"LLM 返回了无法解析的响应（{provider}）", retryable=True
+        ) from exc
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        raise RuntimeError(
-            f"LLM 返回结构异常（{provider}）："
-            f"{json.dumps(data, ensure_ascii=False)[:800]}"
+        raise LLMBackendError(
+            f"LLM 返回结构异常（{provider}）", retryable=True
         )
 
     if not isinstance(content, str) or not content.strip():
-        raise RuntimeError(f"LLM 返回内容为空（{provider}）")
+        raise LLMBackendError(f"LLM 返回内容为空（{provider}）", retryable=True)
     return content
 
 
@@ -300,19 +470,49 @@ def _run_anthropic(
         ],
     }
 
-    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    except requests.RequestException as exc:
+        raise LLMBackendError(
+            f"无法连接 Anthropic 服务：{exc}", retryable=True
+        ) from exc
     if response.status_code != 200:
-        raise RuntimeError(
-            f"LLM 接口调用失败（anthropic HTTP {response.status_code}）："
-            f"{response.text[:800]}"
-        )
+        raise _http_error("anthropic", response)
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise LLMBackendError(
+            "Anthropic 返回了无法解析的响应", retryable=True
+        ) from exc
     text = "".join(
         part.get("text", "")
         for part in data.get("content", [])
         if isinstance(part, dict) and part.get("type") == "text"
     )
     if not text.strip():
-        raise RuntimeError("LLM 返回内容为空（anthropic）")
+        raise LLMBackendError("LLM 返回内容为空（anthropic）", retryable=True)
     return text
+
+
+def _http_error(provider: str, response: requests.Response) -> LLMBackendError:
+    status = response.status_code
+    if status in {401, 403}:
+        message = f"{provider} 的 API Key 无效或无权访问所选模型，请修改设置后重试。"
+        retryable = False
+    elif status == 402:
+        message = f"{provider} 当前无可用额度，转录结果已保留，可在额度恢复后重试。"
+        retryable = False
+    elif status == 429:
+        message = f"{provider} 请求过于频繁，转录结果已保留，可稍后重试。"
+        retryable = True
+    elif status in {408, 409, 425} or status >= 500:
+        message = f"{provider} 服务暂时不可用（HTTP {status}），可稍后重试。"
+        retryable = True
+    else:
+        detail = re.sub(r"\s+", " ", response.text).strip()[:300]
+        message = f"{provider} 接口调用失败（HTTP {status}）"
+        if detail:
+            message += f"：{detail}"
+        retryable = False
+    return LLMBackendError(message, retryable=retryable)

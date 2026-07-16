@@ -5,9 +5,11 @@ from pathlib import Path
 
 import local_meeting_drafts
 from local_meeting_drafts import (
+    CHECKPOINT_FILENAME,
     REQUEST_FILENAME,
     STATE_FILENAME,
     write_local_meeting_request,
+    write_local_meeting_checkpoint,
     write_local_meeting_state,
 )
 
@@ -42,6 +44,17 @@ class WriteLocalMeetingRequestTests(unittest.TestCase):
             self.assertEqual(data["title"], "新标题")
             self.assertEqual(data["template"], "research_seminar")
             self.assertEqual(data["formats"], ["md"])
+            self.assertEqual(list(session_path.glob(f".{REQUEST_FILENAME}.*.tmp")), [])
+
+
+def test_checkpoint_preserves_last_completed_stage():
+    with tempfile.TemporaryDirectory() as tmp:
+        session_path = Path(tmp)
+        write_local_meeting_checkpoint(session_path, "transcribing", "diarization")
+        write_local_meeting_checkpoint(session_path, "paused")
+        data = json.loads((session_path / CHECKPOINT_FILENAME).read_text(encoding="utf-8"))
+        assert data["stage"] == "paused"
+        assert data["completed_stage"] == "diarization"
 
 
 class WriteLocalMeetingStateTests(unittest.TestCase):

@@ -70,7 +70,7 @@ check_llm_backend() {
       fi
       ;;
     lm-studio|ollama)
-      pass "LLM 后端配置：$provider（本地服务运行时检查模型）"
+      pass "LLM 后端配置：${provider}（本地服务运行时检查模型）"
       ;;
     *)
       fail "不支持的 LLM_PROVIDER：$provider"
@@ -116,8 +116,20 @@ resolve_tool_path() {
 
 read_env_value() {
   local key="$1"
-  [[ -f "$ENV_FILE" ]] || return 0
-  grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true
+  local value=""
+  if [[ -f "$ENV_FILE" ]]; then
+    value="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  fi
+  if [[ -z "$value" ]]; then
+    case "$key" in
+      FEISHU_APP_SECRET|HF_TOKEN|LLM_API_KEY)
+        value="$(/usr/bin/security find-generic-password \
+          -w -s "com.pgui.FeishuMeetingBotMenuBar.credentials" \
+          -a "$key" 2>/dev/null || true)"
+        ;;
+    esac
+  fi
+  printf '%s\n' "$value"
 }
 
 check_env() {

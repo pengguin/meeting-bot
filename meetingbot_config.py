@@ -57,6 +57,10 @@ LLM_API_BASE = os.getenv("LLM_API_BASE", "").strip().rstrip("/")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
 LLM_TIMEOUT_SECONDS = positive_env_int("LLM_TIMEOUT_SECONDS", 600)
+LLM_MAX_ATTEMPTS = positive_env_int("LLM_MAX_ATTEMPTS", 3)
+TASK_MAX_WORKERS = positive_env_int("TASK_MAX_WORKERS", 1)
+TASK_MAX_PENDING = positive_env_int("TASK_MAX_PENDING", 8)
+DOWNLOAD_MAX_MB = positive_env_int("DOWNLOAD_MAX_MB", 2048)
 
 REPORT_BODY_FONT = os.getenv("REPORT_BODY_FONT", "PingFang SC").strip() or "PingFang SC"
 REPORT_HEADING_FONT = os.getenv("REPORT_HEADING_FONT", REPORT_BODY_FONT).strip() or REPORT_BODY_FONT

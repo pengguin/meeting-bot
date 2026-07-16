@@ -14,15 +14,10 @@ from typing import Dict, List, Tuple, Optional
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import requests
-import soundfile as sf
-import torch
-
 # pyannote telemetry can block long-running background processes when its
 # exporter connection becomes stale. The bot runs fully locally, so disable it.
 os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
-
-from pyannote.audio import Pipeline
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
@@ -34,7 +29,7 @@ from lark_oapi.api.im.v1 import (
 from chinese_text import simplify_chinese
 from asr_runtime import asr_runtime_description, create_asr_model, transcribe_with_asr_model
 from diarization_runtime import configure_diarization_pipeline, run_diarization_pipeline
-from llm_backend import llm_runtime_description, run_llm
+from llm_backend import llm_runtime_description, run_llm, write_json_atomic
 from speaker_naming import build_anonymous_speaker_map
 from meetingbot_config import (
     ASR_LANGUAGE,
@@ -46,11 +41,14 @@ from meetingbot_config import (
     FEISHU_APP_SECRET,
     FFMPEG_BIN,
     HF_TOKEN,
+    DOWNLOAD_MAX_MB,
     RUNTIME_DIR,
     RUNTIME_EVENTS_DIR,
     RUNTIME_STATUS_FILE,
     SCHEMA_DIR,
     SESSION_DIR,
+    TASK_MAX_PENDING,
+    TASK_MAX_WORKERS,
     get_allowed_templates,
     get_template_descriptions,
     get_template_guidance,
@@ -80,14 +78,27 @@ from transcript_material import (
     normalize_uploaded_transcript_text,
 )
 from transcription_progress import TranscriptionProgress, audio_duration_seconds
+from task_runtime import BoundedTaskExecutor, PersistentMessageDeduplicator
 
 
 # ============================================================
 # 2. 全局状态
 # ============================================================
 
-PROCESSED_MESSAGE_IDS = set()
 DIARIZATION_LOCK = threading.Lock()
+MODEL_LOCK = threading.Lock()
+MESSAGE_DEDUPLICATOR = PersistentMessageDeduplicator(
+    RUNTIME_DIR / "processed_message_ids.json"
+)
+MESSAGE_TASKS = BoundedTaskExecutor(
+    max_workers=TASK_MAX_WORKERS,
+    max_pending=TASK_MAX_PENDING,
+)
+_whisper_model = None
+_diarization_pipeline = None
+_tenant_token = ""
+_tenant_token_expires_at = 0.0
+_tenant_token_lock = threading.Lock()
 
 
 def runtime_timestamp() -> str:
@@ -268,21 +279,32 @@ feishu_client = (
 )
 
 
-# ============================================================
-# 5. 初始化 ASR 与说话人分离模型
-# ============================================================
+def get_whisper_model():
+    global _whisper_model
+    if _whisper_model is not None:
+        return _whisper_model
+    with MODEL_LOCK:
+        if _whisper_model is None:
+            print(f"[ASR] 首次任务正在加载模型：{ASR_MODEL}")
+            _whisper_model = create_asr_model()
+            print(f"[ASR] 模型加载完成：{asr_runtime_description()}")
+    return _whisper_model
 
-print(f"[ASR] 正在加载 faster-whisper 模型：{ASR_MODEL}")
-whisper_model = create_asr_model()
-print(f"[ASR] faster-whisper 模型加载完成：{asr_runtime_description()}")
 
-print(f"[Diarization] 正在加载 pyannote 模型：{DIARIZATION_MODEL}")
-diarization_pipeline = Pipeline.from_pretrained(
-    DIARIZATION_MODEL,
-    token=HF_TOKEN,
-)
-diarization_device = configure_diarization_pipeline(diarization_pipeline)
-print(f"[Diarization] pyannote 模型加载完成，运行设备：{diarization_device.type}")
+def get_diarization_pipeline():
+    global _diarization_pipeline
+    if _diarization_pipeline is not None:
+        return _diarization_pipeline
+    with MODEL_LOCK:
+        if _diarization_pipeline is None:
+            from pyannote.audio import Pipeline
+
+            print(f"[Diarization] 首次任务正在加载模型：{DIARIZATION_MODEL}")
+            pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL, token=HF_TOKEN)
+            device = configure_diarization_pipeline(pipeline)
+            _diarization_pipeline = pipeline
+            print(f"[Diarization] 模型加载完成，运行设备：{device.type}")
+    return _diarization_pipeline
 
 
 # ============================================================
@@ -383,24 +405,28 @@ def looks_like_transcript_text(text: str) -> bool:
 # ============================================================
 
 def get_tenant_access_token() -> str:
-    url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-    payload = {
-        "app_id": FEISHU_APP_ID,
-        "app_secret": FEISHU_APP_SECRET,
-    }
+    global _tenant_token, _tenant_token_expires_at
+    with _tenant_token_lock:
+        if _tenant_token and time.time() < _tenant_token_expires_at - 60:
+            return _tenant_token
 
-    resp = requests.post(url, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-
-    if data.get("code") != 0:
-        raise RuntimeError(f"获取 tenant_access_token 失败：{data}")
-
-    token = data.get("tenant_access_token")
-    if not token:
-        raise RuntimeError(f"tenant_access_token 为空：{data}")
-
-    return token
+        url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        payload = {"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}
+        resp = requests.post(url, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"获取飞书访问凭据失败（code={data.get('code', 'unknown')}）")
+        token = data.get("tenant_access_token")
+        if not token:
+            raise RuntimeError("飞书访问凭据响应为空")
+        try:
+            expires_in = max(300, int(data.get("expire", 7200) or 7200))
+        except (TypeError, ValueError):
+            expires_in = 7200
+        _tenant_token = token
+        _tenant_token_expires_at = time.time() + expires_in
+        return token
 
 
 def download_message_resource(
@@ -435,11 +461,30 @@ def download_message_resource(
         headers=headers,
         params=params,
         timeout=600,
+        stream=True,
     )
     resp.raise_for_status()
+    max_bytes = DOWNLOAD_MAX_MB * 1024 * 1024
+    try:
+        declared_size = int(resp.headers.get("Content-Length", "0") or 0)
+    except (TypeError, ValueError):
+        declared_size = 0
+    if declared_size > max_bytes:
+        raise RuntimeError(f"文件超过允许大小（上限 {DOWNLOAD_MAX_MB} MB）")
 
-    with open(save_path, "wb") as f:
-        f.write(resp.content)
+    received = 0
+    try:
+        with open(save_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                received += len(chunk)
+                if received > max_bytes:
+                    raise RuntimeError(f"文件超过允许大小（上限 {DOWNLOAD_MAX_MB} MB）")
+                f.write(chunk)
+    except Exception:
+        save_path.unlink(missing_ok=True)
+        raise
 
     return save_path
 
@@ -625,6 +670,9 @@ def convert_audio_to_wav_16k_mono(
 
 
 def load_waveform_for_pyannote(wav_path: Path) -> Dict:
+    import soundfile as sf
+    import torch
+
     waveform_np, sample_rate = sf.read(str(wav_path), dtype="float32")
 
     if waveform_np.ndim == 1:
@@ -710,7 +758,7 @@ def diarize_audio(audio_path: Path, session_path: Path) -> List[Dict]:
             )
 
         output = run_diarization_pipeline(
-            diarization_pipeline,
+            get_diarization_pipeline(),
             audio_for_pyannote,
             hook=progress_hook,
             on_fallback=on_device_fallback,
@@ -759,7 +807,7 @@ def transcribe_audio(audio_path: Path, session_path: Path) -> List[Dict]:
         ),
     )
     progress.start()
-    segments, _info = transcribe_with_asr_model(whisper_model, audio_path)
+    segments, _info = transcribe_with_asr_model(get_whisper_model(), audio_path)
 
     transcript_segments: List[Dict] = []
     for seg in segments:
@@ -981,10 +1029,7 @@ def ensure_classification_schema() -> Path:
         "additionalProperties": False,
     }
 
-    schema_path.write_text(
-        json.dumps(schema, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(schema_path, schema)
 
     return schema_path
 
@@ -1123,10 +1168,7 @@ def ensure_report_schema() -> Path:
         "additionalProperties": False,
     }
 
-    schema_path.write_text(
-        json.dumps(schema, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(schema_path, schema)
 
     return schema_path
 
@@ -1196,10 +1238,7 @@ def classify_meeting_type(
         "reason": reason,
     }
 
-    output_path.write_text(
-        json.dumps(classification, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(output_path, classification)
     return classification
 
 
@@ -1311,10 +1350,7 @@ def generate_structured_report(
         "open_question_count": len(report.get("open_questions", [])),
     }
 
-    output_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(output_path, report)
     return report
 
 
@@ -2187,19 +2223,11 @@ def handle_text_message(message_id: str, text: str, content: Optional[Dict] = No
 
     speaker_updates = parse_speaker_mapping_update(text)
     if speaker_updates:
-        threading.Thread(
-            target=regenerate_named_outputs,
-            args=(message_id, speaker_updates),
-            daemon=True,
-        ).start()
+        regenerate_named_outputs(message_id, speaker_updates)
         return
 
     if looks_like_transcript_text(text):
-        threading.Thread(
-            target=process_text_transcript_material,
-            args=(message_id, text, "pasted_transcript.txt", True),
-            daemon=True,
-        ).start()
+        process_text_transcript_material(message_id, text, "pasted_transcript.txt", True)
         return
 
     reply_text(
@@ -2218,32 +2246,25 @@ def on_message_receive(data: P2ImMessageReceiveV1) -> None:
         message_id = message.message_id
         message_type = message.message_type
 
-        if message_id in PROCESSED_MESSAGE_IDS:
+        if not MESSAGE_DEDUPLICATOR.claim(message_id):
             print(f"[Dedup] 跳过重复消息：{message_id}")
             return
-
-        PROCESSED_MESSAGE_IDS.add(message_id)
 
         raw_content = message.content or "{}"
         content = json.loads(raw_content)
 
         print(f"[Feishu] 收到消息：type={message_type}, id={message_id}")
-        print(f"[Feishu] content={content}")
 
         if message_type == "text":
             text = content.get("text", "")
-            threading.Thread(
-                target=handle_text_message,
-                args=(message_id, text, content, message),
-                daemon=True,
-            ).start()
+            accepted = MESSAGE_TASKS.submit(handle_text_message, message_id, text, content, message)
+            if not accepted:
+                reply_text(message_id, "当前待处理任务较多，请稍后重新发送。")
 
         elif message_type in {"audio", "file"}:
-            threading.Thread(
-                target=process_audio_message,
-                args=(message_id, message_type, content),
-                daemon=True,
-            ).start()
+            accepted = MESSAGE_TASKS.submit(process_audio_message, message_id, message_type, content)
+            if not accepted:
+                reply_text(message_id, "当前待处理任务较多，请稍后重新发送。")
 
         else:
             reply_text(

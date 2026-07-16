@@ -40,6 +40,8 @@ final class BootstrapInstallerStore: ObservableObject {
     @Published private(set) var requiresToolAction = false
     @Published private(set) var isInstallingTools = false
     @Published private(set) var toolInstallMessage: String?
+    @Published private(set) var recoveryMessage: String?
+    @Published private(set) var requiresHomebrew = false
 
     private let fileManager = FileManager.default
     private var pendingCompletion: ((Bool) -> Void)?
@@ -157,6 +159,7 @@ final class BootstrapInstallerStore: ObservableObject {
             ? "正在部署后台组件和运行环境"
             : "正在更新后台组件和运行环境"
         recentOutput = []
+        recoveryMessage = nil
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -310,6 +313,7 @@ final class BootstrapInstallerStore: ObservableObject {
 
         isInstallingTools = true
         toolInstallMessage = nil
+        requiresHomebrew = false
         statusText = "正在安装缺失工具"
 
         let process = Process()
@@ -343,7 +347,9 @@ final class BootstrapInstallerStore: ObservableObject {
                     self.finishInstallation()
                 } else {
                     self.statusText = "工具自动安装未完成"
-                    self.toolInstallMessage = "自动安装失败。可查看日志后重试，或暂时跳过。"
+                    self.toolInstallMessage = self.requiresHomebrew
+                        ? "请先从 Homebrew 官网完成安装，然后返回此处重试。"
+                        : "自动安装失败。可查看日志后重试，或暂时跳过。"
                 }
             }
         }
@@ -366,6 +372,13 @@ final class BootstrapInstallerStore: ObservableObject {
             at: logFileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        if let size = try? logFileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           size > 2 * 1024 * 1024 {
+            let archived = logFileURL.deletingLastPathComponent()
+                .appendingPathComponent("首次启动安装-上次.log")
+            try? fileManager.removeItem(at: archived)
+            try? fileManager.moveItem(at: logFileURL, to: archived)
+        }
         if !fileManager.fileExists(atPath: logFileURL.path) {
             fileManager.createFile(atPath: logFileURL.path, contents: nil)
         }
@@ -398,10 +411,24 @@ final class BootstrapInstallerStore: ObservableObject {
                 pythonIssueSummary = pythonLine
             }
             missingToolIDs.formUnion(lines.compactMap(Self.missingToolID))
+            if lines.contains(where: { $0.contains("code=HOMEBREW_REQUIRED") }) {
+                requiresHomebrew = true
+            }
+            if let phase = lines.reversed().compactMap(Self.installationPhase).first {
+                statusText = phase
+            }
+            if let recovery = lines.first(where: { $0.contains("[install][recovery]") }) {
+                recoveryMessage = recovery.contains("restored=")
+                    ? "更新失败后已自动恢复旧版运行组件；会议、录音和配置均已保留。"
+                    : "更新失败，已尝试恢复旧版运行组件。"
+            }
         }
     }
 
     private func installationFailureMessage(exitCode: Int32) -> String {
+        if recoveryMessage != nil {
+            return "本次更新未完成，但旧版本已恢复，可以继续使用。请打开日志查看失败阶段后重试。"
+        }
         let latestDetail = recentOutput
             .reversed()
             .first(where: {
@@ -521,6 +548,13 @@ final class BootstrapInstallerStore: ObservableObject {
         }
         return nil
     }
+
+    private static func installationPhase(from line: String) -> String? {
+        guard line.hasPrefix("[install] "), !line.contains("[warn]") else {
+            return nil
+        }
+        return String(line.dropFirst("[install] ".count))
+    }
 }
 
 struct BootstrapInstallWindowView: View {
@@ -567,6 +601,12 @@ struct BootstrapInstallWindowView: View {
                 if let errorMessage = store.errorMessage {
                     Text(errorMessage)
                         .foregroundStyle(.red)
+                }
+
+                if let recoveryMessage = store.recoveryMessage {
+                    Label(recoveryMessage, systemImage: "arrow.uturn.backward.circle.fill")
+                        .foregroundStyle(Color.statusDone)
+                        .font(.callout)
                 }
 
                 if store.requiresPythonAction {
@@ -629,6 +669,13 @@ struct BootstrapInstallWindowView: View {
                                     store.continueWithoutOptionalTools()
                                 }
                                 .disabled(store.isInstallingTools)
+
+                                if store.requiresHomebrew {
+                                    Link(
+                                        "打开 Homebrew 官网",
+                                        destination: URL(string: "https://brew.sh")!
+                                    )
+                                }
                             }
 
                             if store.isInstallingTools {
@@ -636,7 +683,7 @@ struct BootstrapInstallWindowView: View {
                                     .progressViewStyle(.linear)
                             }
 
-                            Text("会使用 Homebrew 安装 ffmpeg 和 LibreOffice，并安装 Codex CLI；若机器尚无 Homebrew，安装过程会先准备它。Codex CLI 安装后仍需登录。")
+                            Text("会使用已安装的 Homebrew 补齐 ffmpeg、LibreOffice 和 Codex CLI。为避免未经确认执行网络脚本，Homebrew 本身需由你从官网安装；Codex CLI 安装后仍需登录。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
 

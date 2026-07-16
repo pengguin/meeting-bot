@@ -36,8 +36,20 @@ fail() {
 
 read_env_value() {
   local key="$1"
-  [[ -f "$ENV_FILE" ]] || return 0
-  grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true
+  local value=""
+  if [[ -f "$ENV_FILE" ]]; then
+    value="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  fi
+  if [[ -z "$value" ]]; then
+    case "$key" in
+      FEISHU_APP_SECRET|HF_TOKEN|LLM_API_KEY)
+        value="$(/usr/bin/security find-generic-password \
+          -w -s "com.pgui.FeishuMeetingBotMenuBar.credentials" \
+          -a "$key" 2>/dev/null || true)"
+        ;;
+    esac
+  fi
+  printf '%s\n' "$value"
 }
 
 resolve_tool_path() {
@@ -159,7 +171,7 @@ check_macos() {
   if [[ "$major" =~ ^[0-9]+$ ]] && (( major >= MIN_MACOS_MAJOR )); then
     pass "macOS $version"
   else
-    fail "macOS $version；需要 macOS $MIN_MACOS_MAJOR 或更高版本"
+    fail "macOS ${version}；需要 macOS ${MIN_MACOS_MAJOR} 或更高版本"
   fi
 }
 
@@ -170,7 +182,7 @@ check_architecture() {
   if [[ "$arch" == "arm64" || "$arm64_capable" == "1" ]]; then
     pass "Apple Silicon 芯片"
   else
-    fail "当前芯片架构为 $arch；当前发行包仅支持 Apple Silicon"
+    fail "当前芯片架构为 ${arch}；当前发行包仅支持 Apple Silicon"
   fi
 }
 
@@ -195,6 +207,9 @@ check_memory() {
 check_disk() {
   local target available_kb available_gb
   target="${INSTALL_DIR:-$HOME}"
+  while [[ ! -e "$target" && "$target" != "/" ]]; do
+    target="$(dirname "$target")"
+  done
   available_kb="$(df -Pk "$target" | awk 'NR==2 {print $4}')"
   if [[ -z "$available_kb" ]]; then
     warn "无法读取剩余磁盘空间"
@@ -317,7 +332,7 @@ check_llm_backend() {
       fi
       ;;
     lm-studio|ollama)
-      pass "LLM 后端配置：$provider（本地服务运行时检查模型）"
+      pass "LLM 后端配置：${provider}（本地服务运行时检查模型）"
       ;;
     *)
       warn "不支持的 LLM_PROVIDER：$provider"

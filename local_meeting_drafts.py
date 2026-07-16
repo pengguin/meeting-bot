@@ -11,10 +11,11 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 STATE_FILENAME = "local_meeting_state.json"
 REQUEST_FILENAME = "local_meeting_request.json"
+CHECKPOINT_FILENAME = "local_meeting_checkpoint.json"
 
 
 def runtime_timestamp() -> str:
@@ -47,8 +48,44 @@ def write_local_meeting_request(
         "updated_at": runtime_timestamp(),
     }
     request_path = session_path / REQUEST_FILENAME
-    request_path.write_text(
+    request_tmp = session_path / f".{REQUEST_FILENAME}.{uuid.uuid4().hex}.tmp"
+    request_tmp.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    request_tmp.replace(request_path)
     return request_path
+
+
+def read_json_object(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_local_meeting_checkpoint(
+    session_path: Path,
+    stage: str,
+    completed_stage: Optional[str] = None,
+) -> Path:
+    """Persist the resumable pipeline checkpoint atomically."""
+    checkpoint_path = session_path / CHECKPOINT_FILENAME
+    previous = read_json_object(checkpoint_path)
+    payload = {
+        "stage": stage,
+        "completed_stage": completed_stage or previous.get("completed_stage", ""),
+        "updated_at": runtime_timestamp(),
+    }
+    checkpoint_tmp = session_path / f".{CHECKPOINT_FILENAME}.{uuid.uuid4().hex}.tmp"
+    checkpoint_tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    checkpoint_tmp.replace(checkpoint_path)
+    return checkpoint_path
+
+
+def load_local_meeting_checkpoint(session_path: Path) -> dict:
+    return read_json_object(session_path / CHECKPOINT_FILENAME)

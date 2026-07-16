@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,9 @@ from llm_backend import (
     extract_json_text,
     resolve_api_base,
     resolve_provider,
+    run_llm,
+    SchemaValidationError,
+    validate_json_data,
 )
 
 
@@ -35,6 +39,12 @@ def test_default_api_bases():
     assert resolve_api_base("lm-studio") == "http://127.0.0.1:1234/v1"
     assert resolve_api_base("ollama") == "http://127.0.0.1:11434/v1"
     assert set(DEFAULT_API_BASES) == SUPPORTED_PROVIDERS - {"codex"}
+
+
+def test_remote_http_api_base_is_rejected(monkeypatch):
+    monkeypatch.setattr(llm_backend, "LLM_API_BASE", "http://example.com/v1")
+    with pytest.raises(RuntimeError, match="HTTPS"):
+        resolve_api_base("openai")
 
 
 def test_resolve_model_openai_requires_explicit_model():
@@ -64,3 +74,81 @@ def test_extract_json_text_strips_bare_fence():
 def test_extract_json_text_slices_prose_wrapped_object():
     raw = '好的，以下是结果：\n{"a": {"b": 2}}\n如有问题请告知。'
     assert extract_json_text(raw) == '{"a": {"b": 2}}'
+
+
+def test_schema_validation_rejects_missing_and_extra_fields(tmp_path):
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+                "additionalProperties": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    validate_json_data({"name": "会议"}, schema_path)
+    with pytest.raises(SchemaValidationError):
+        validate_json_data({}, schema_path)
+    with pytest.raises(SchemaValidationError):
+        validate_json_data({"name": "会议", "extra": True}, schema_path)
+
+
+def test_run_llm_retries_invalid_json_and_writes_atomically(tmp_path, monkeypatch):
+    output_path = tmp_path / "report.json"
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+                "additionalProperties": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    responses = iter(['{"wrong": true}', '{"name": "会议"}'])
+    monkeypatch.setattr(llm_backend, "resolve_provider", lambda: "openai")
+    monkeypatch.setattr(llm_backend, "LLM_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(llm_backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        llm_backend,
+        "_run_openai_compatible",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    assert json.loads(run_llm("prompt", output_path, schema_path)) == {"name": "会议"}
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {"name": "会议"}
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_run_llm_preserves_previous_output_after_invalid_retries(tmp_path, monkeypatch):
+    output_path = tmp_path / "report.json"
+    output_path.write_text('{"name": "旧结果"}', encoding="utf-8")
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+                "additionalProperties": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(llm_backend, "resolve_provider", lambda: "openai")
+    monkeypatch.setattr(llm_backend, "LLM_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(llm_backend.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        llm_backend,
+        "_run_openai_compatible",
+        lambda *_args, **_kwargs: "not-json",
+    )
+
+    with pytest.raises(RuntimeError, match="格式不完整"):
+        run_llm("prompt", output_path, schema_path)
+    assert output_path.read_text(encoding="utf-8") == '{"name": "旧结果"}'
