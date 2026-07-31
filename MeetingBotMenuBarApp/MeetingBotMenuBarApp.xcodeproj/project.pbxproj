@@ -238,8 +238,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "会议纪要助手";
 				INFOPLIST_KEY_CFBundleIconFile = AppIcon;
-				INFOPLIST_KEY_CFBundleShortVersionString = 0.5.2;
-				INFOPLIST_KEY_CFBundleVersion = 34;
+				INFOPLIST_KEY_CFBundleShortVersionString = 0.6.0;
+				INFOPLIST_KEY_CFBundleVersion = 35;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_MeetingBotBuildSecurityMode = development;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -262,8 +262,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "会议纪要助手";
 				INFOPLIST_KEY_CFBundleIconFile = AppIcon;
-				INFOPLIST_KEY_CFBundleShortVersionString = 0.5.2;
-				INFOPLIST_KEY_CFBundleVersion = 34;
+				INFOPLIST_KEY_CFBundleShortVersionString = 0.6.0;
+				INFOPLIST_KEY_CFBundleVersion = 35;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_MeetingBotBuildSecurityMode = development;
 				LD_RUNPATH_SEARCH_PATHS = (

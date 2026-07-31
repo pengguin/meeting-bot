@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
+from durable_storage import DataStoreError, atomic_write_json, atomic_write_text, read_json_object
 from chinese_text import simplify_chinese
 from audio_pipeline import AudioPipeline
 from llm_backend import SchemaValidationError, validate_json_data, write_json_atomic
@@ -138,6 +139,8 @@ def write_runtime_status(
 ) -> None:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
+        "schema_version": 1,
+        "document_type": "runtime_status",
         "service_status": "running",
         "task_status": task_status,
         "stage": stage,
@@ -151,9 +154,7 @@ def write_runtime_status(
         "updated_at": runtime_timestamp(),
         "source": "local_meeting",
     }
-    tmp_path = RUNTIME_DIR / f".status_{uuid.uuid4().hex}.json.tmp"
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(RUNTIME_STATUS_FILE)
+    atomic_write_json(RUNTIME_STATUS_FILE, payload)
     # 把状态也写到会话目录，作为草稿会议的状态快照（供前端识别草稿、判断能否重试）。
     if session_path is not None:
         write_local_meeting_state(session_path, payload)
@@ -162,8 +163,10 @@ def write_runtime_status(
 
 def load_json(path: Path, expected_type):
     try:
+        if expected_type is dict:
+            return read_json_object(path, missing=None)
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, DataStoreError):
         return None
     return payload if isinstance(payload, expected_type) else None
 
@@ -187,6 +190,8 @@ def write_meeting_done_event(
         + f"_{uuid.uuid4().hex[:6]}.json"
     )
     payload = {
+        "schema_version": 1,
+        "document_type": "runtime_event",
         "event": "meeting_done",
         "session_id": session_path.name,
         "session_dir": str(session_path),
@@ -199,9 +204,7 @@ def write_meeting_done_event(
         "created_at": runtime_timestamp(),
     }
     event_path = RUNTIME_EVENTS_DIR / filename
-    tmp_path = RUNTIME_EVENTS_DIR / f".{filename}.tmp"
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(event_path)
+    atomic_write_json(event_path, payload)
 
 
 def convert_audio_to_wav_16k_mono(input_audio: Path, session_path: Path) -> Path:
@@ -284,10 +287,7 @@ def diarize_audio(
             }
         )
     segments.sort(key=lambda item: item["start"])
-    (session_path / "diarization.json").write_text(
-        json.dumps(segments, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(session_path / "diarization.json", segments)
     return segments
 
 
@@ -326,10 +326,7 @@ def transcribe_audio(
     if not transcript_segments:
         raise RuntimeError("转写结果为空")
     progress.complete()
-    (session_path / "transcript_segments.json").write_text(
-        json.dumps(transcript_segments, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(session_path / "transcript_segments.json", transcript_segments)
     return transcript_segments
 
 
@@ -364,10 +361,7 @@ def assign_speakers_to_transcript(
                 "text": transcript["text"],
             }
         )
-    (session_path / "transcript_with_speaker_raw.json").write_text(
-        json.dumps(merged, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(session_path / "transcript_with_speaker_raw.json", merged)
     return merged
 
 
@@ -375,10 +369,7 @@ def build_default_speaker_map(merged_segments: List[Dict], session_path: Path) -
     speaker_map = build_anonymous_speaker_map(
         segment["speaker"] for segment in merged_segments
     )
-    (session_path / "speaker_map.json").write_text(
-        json.dumps(speaker_map, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(session_path / "speaker_map.json", speaker_map)
     return speaker_map
 
 
@@ -444,12 +435,12 @@ def create_session_from_transcript(
         },
     )
     shutil.copy2(transcript_path, session_path / transcript_path.name)
-    (session_path / "uploaded_transcript.txt").write_text(transcript_text.strip(), encoding="utf-8")
+    atomic_write_text(session_path / "uploaded_transcript.txt", transcript_text.strip())
     transcript_markdown = normalize_uploaded_transcript_text(
         transcript_text,
         title=title or transcript_path.stem or "上传的转录文字材料",
     )
-    (session_path / "transcript_anon.md").write_text(transcript_markdown, encoding="utf-8")
+    atomic_write_text(session_path / "transcript_anon.md", transcript_markdown)
     merged_segments = create_text_segments_from_transcript(transcript_text, session_path)
     speakers: List[str] = []
     for segment in merged_segments:
@@ -457,10 +448,7 @@ def create_session_from_transcript(
         if speaker not in speakers:
             speakers.append(speaker)
     speaker_map = {"TEXT": "转录文本"} if speakers == ["TEXT"] else {speaker: speaker for speaker in speakers}
-    (session_path / "speaker_map.json").write_text(
-        json.dumps(speaker_map, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(session_path / "speaker_map.json", speaker_map)
     checkpoint(session_path, "transcript_ready", "transcript_ready")
     return session_path, transcript_markdown, speaker_map
 
@@ -547,7 +535,7 @@ def create_session_from_audio(
             speaker_map,
             "完整转录稿（匿名说话人版）",
         )
-        transcript_path.write_text(transcript_markdown, encoding="utf-8")
+        atomic_write_text(transcript_path, transcript_markdown)
         checkpoint(session_path, "transcript_ready", "transcript_ready")
     else:
         transcript_markdown = transcript_path.read_text(encoding="utf-8")

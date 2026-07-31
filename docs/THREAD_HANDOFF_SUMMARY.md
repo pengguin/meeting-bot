@@ -1,6 +1,6 @@
 # 会议纪要助手 线程交接总结
 
-生成时间：2026-05-18（2026-07-31 更新至 0.5.2 安全与安装边界修复）
+生成时间：2026-05-18（2026-07-31 更新至 0.6.0 数据与模块底座）
 
 本文档用于帮助新线程中的 agent 快速理解本轮开发上下文、已完成工作、关键文件和后续开发入口。
 
@@ -24,7 +24,7 @@
 
 ## 本轮主要工作
 
-### 当前主线状态（2026-07-31 / 0.5.2 build 34）
+### 当前主线状态（2026-07-31 / 0.6.0 build 35）
 
 本地 `main` 已以 UI 分支为后续主线，0.4.0 完成可续跑流程与事务式安装，0.5.0 按路线图完成核心模块拆分、会议库后台增量索引与发布完整性链路。旧主线基线 `3303606` 仅作为历史远端分支保留，不再作为后续开发入口。
 
@@ -37,7 +37,7 @@
 - 说话人分离和语音转写均有实时进度；Apple Silicon 说话人分离优先 MPS，不兼容步骤回退 CPU。
 - 说话人显示统一为 `SPEAKER_00 -> 说话人1`、`UNKNOWN -> 未知说话人`；保存真实姓名后会同步重生成转录稿、会议纪要和已有导出文件。
 - 原始转录音频拖动改为预览时间、松手后一次性跳转，降低长音频播放进度条卡顿。
-- 发布脚本 `MeetingBotMenuBarApp/build_release_app.sh` 当前版本为 `0.5.2`、构建号 `34`；Xcode、升级脚本与安装盘脚本版本已同步。
+- 发布脚本 `MeetingBotMenuBarApp/build_release_app.sh` 当前版本为 `0.6.0`、构建号 `35`；Xcode、升级脚本与安装盘脚本版本已同步。
 - `0.3.1` 修复会议库配色实时联动：列表图标、选中背景、标签、日期筛选、原始转录活动段落和会议条目右侧“已生成纪要”状态圆点均跟随设置页蓝 / 绿 / 灰配色刷新。
 - `0.3.2` 在本地新增会议非主动中止失败时保留草稿：已有转录稿可重试生成纪要，只有原始录音可在原会话目录重新处理；崩溃遗留的处理中草稿会通过任务锁恢复为可操作状态。
 - `0.4.0` 将草稿扩展为阶段检查点流程：暂停、崩溃或 App 重开后复用已完成的音频预处理、说话人分离、转写、对齐、分类和纪要产物；纪要失败可沿用原格式重试。
@@ -49,6 +49,7 @@
 - App 内载荷包含逐文件 SHA-256 清单；安装器在备份或覆盖旧版前校验。安装盘构建后生成机器可读发布清单，并预留 ECDSA P-256/SHA-256 签名入口。
 - `0.5.1` 修复后台启动入口调用已删除旧函数导致的 LaunchAgent 重启循环；界面停止状态不再显示陈旧的“运行中”消息。
 - `0.5.2` 修复飞书跨会话引用、载荷与卸载边界、元数据损坏覆盖和 LLM 本地执行权限风险；依赖检测支持非 Homebrew 安装入口。
+- `0.6.0` 建立统一持久化层和数据版本：会议元数据、草稿、检查点及运行状态具备文件锁、原子替换、备份、损坏写保护和显式恢复工具。
 - 开发测试依赖新增 `requirements-dev.txt`；App 虚拟环境中已安装 pytest，`tests/` 目前覆盖 ASR 参数、中文简体转换、说话人分离 MPS 回退、说话人显示同步、转写进度和 LLM 后端。
 
 本轮新增或纳入提交的测试文件：
@@ -421,20 +422,20 @@
 ### 打包产物
 
 - `dist/会议纪要助手.app`
-- 默认安装盘路径：`dist/会议纪要助手 0.5.2 安装盘.dmg`
-- 默认线程交接导出路径：`dist/线程交接汇总 0.5.2.md`
-- 发布元数据路径：`dist/release-manifest-0.5.2.json`
+- 默认安装盘路径：`dist/会议纪要助手 0.6.0 安装盘.dmg`
+- 默认线程交接导出路径：`dist/线程交接汇总 0.6.0.md`
+- 发布元数据路径：`dist/release-manifest-0.6.0.json`
 
 ## 已执行验证
 
-2026-07-31 / 0.5.2 候选版本执行以下检查：
+2026-07-31 / 0.6.0 执行以下检查：
 
 ```bash
 "$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m pytest --version
 "$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m pytest tests -q
 bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhouse.sh scripts/doctor.sh scripts/install_optional_tools.sh scripts/preflight.sh scripts/upgrade.sh start_bot.sh
 PYTHON_BIN="$HOME/Library/Application Support/meeting-bot/.venv/bin/python" ENV_FILE=/tmp/meeting-bot-missing-env-for-preflight bash scripts/preflight.sh
-"$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py scripts/generate_release_manifest.py bot.py feishu_io.py audio_pipeline.py runtime_status.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
+"$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py scripts/generate_release_manifest.py scripts/data_recovery.py bot.py feishu_io.py audio_pipeline.py runtime_status.py durable_storage.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
 bash MeetingBotMenuBarApp/build_release_app.sh
 bash 'dist/会议纪要助手.app/Contents/Resources/bootstrap/meeting-bot/scripts/install.sh' --verify-payload-only
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/会议纪要助手.app/Contents/Info.plist'
@@ -446,16 +447,16 @@ codesign --verify --deep --strict --verbose=2 'dist/会议纪要助手.app'
 验证结果：
 
 - pytest 已安装并可用，版本为 `9.1.0`。
-- 测试结果：`94 passed`。
+- 测试结果：`104 passed`。
 - Shell 脚本语法检查通过。
 - 安装前检查可执行完成；使用缺失 `.env` 路径时不会中断，当前机器仅有“无法读取物理内存”的提示级警告。
 - Python 编译检查通过。
-- 菜单栏 App 已重新构建，`Info.plist` 版本为 `0.5.2`，构建号为 `34`。
+- 菜单栏 App 已重新构建，`Info.plist` 版本为 `0.6.0`，构建号为 `35`。
 - App 可执行文件为 `Mach-O 64-bit executable arm64`。
 - `codesign --verify --deep --strict` 通过。
 - App 内嵌载荷路径为 `Contents/Resources/bootstrap/meeting-bot`，未生成旧 `bootstrap/feishu-meeting-bot`。
 - App 内载荷原样校验通过；自动化测试确认任一受清单保护文件被修改时校验失败。
-- `scripts/build_setup_package.sh` 默认版本号已同步到 `0.5.2`；当前已验证开发版 App 构建与签名完整性，正式 DMG 仍需真实发布签名和 Apple 公证凭据。
+- `scripts/build_setup_package.sh` 默认版本号已同步到 `0.6.0`；当前已验证开发版 App 构建与签名完整性，正式 DMG 仍需真实发布签名和 Apple 公证凭据。
 
 ## 备份目录
 

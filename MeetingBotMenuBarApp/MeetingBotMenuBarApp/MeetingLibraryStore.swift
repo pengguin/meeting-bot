@@ -130,21 +130,27 @@ struct LocalMeetingCreationResult: Decodable {
 }
 
 struct LibraryMetadataDocument: Codable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int = currentSchemaVersion
     var sessions: [String: SessionUserMetadata] = [:]
     var folders: [LibraryFolder] = [LibraryFolder.trash]
     var globalLabels: [String] = []
 
     enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
         case sessions
         case folders
         case globalLabels
     }
 
     init(
+        schemaVersion: Int = currentSchemaVersion,
         sessions: [String: SessionUserMetadata] = [:],
         folders: [LibraryFolder] = [LibraryFolder.trash],
         globalLabels: [String] = []
     ) {
+        self.schemaVersion = schemaVersion
         self.sessions = sessions
         self.folders = folders
         self.globalLabels = globalLabels
@@ -152,6 +158,14 @@ struct LibraryMetadataDocument: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        guard schemaVersion > 0, schemaVersion <= Self.currentSchemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "不支持的会议库元数据版本：\(schemaVersion)"
+            )
+        }
         sessions = try container.decodeIfPresent([String: SessionUserMetadata].self, forKey: .sessions) ?? [:]
         folders = try container.decodeIfPresent([LibraryFolder].self, forKey: .folders) ?? [LibraryFolder.trash]
         globalLabels = try container.decodeIfPresent([String].self, forKey: .globalLabels) ?? []
@@ -1734,7 +1748,16 @@ final class MeetingLibraryStore: ObservableObject {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            metadata.schemaVersion = LibraryMetadataDocument.currentSchemaVersion
             let data = try encoder.encode(metadata)
+            if AppPaths.exists(AppPaths.libraryMetadataFile) {
+                let currentData = try Data(contentsOf: AppPaths.libraryMetadataFile)
+                _ = try JSONDecoder().decode(LibraryMetadataDocument.self, from: currentData)
+                try currentData.write(
+                    to: AppPaths.libraryMetadataFile.appendingPathExtension("bak"),
+                    options: .atomic
+                )
+            }
             try data.write(to: AppPaths.libraryMetadataFile, options: .atomic)
             lastErrorMessage = nil
             refreshHighlightedFolder()

@@ -4,10 +4,41 @@ import unittest
 from pathlib import Path
 
 import session_store
-from session_store import find_reusable_session, read_text_file, transcript_text_sha256
+from durable_storage import DataCorruptionError
+from session_store import (
+    find_reusable_session,
+    load_session_metadata,
+    read_text_file,
+    transcript_text_sha256,
+    write_session_metadata,
+)
 
 
 class SessionStoreTests(unittest.TestCase):
+    def test_corrupt_source_metadata_is_not_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session = Path(tmpdir)
+            path = session / "source_metadata.json"
+            path.write_text("broken", encoding="utf-8")
+
+            with self.assertRaises(DataCorruptionError):
+                load_session_metadata(session)
+            with self.assertRaises(DataCorruptionError):
+                write_session_metadata(session, {"source_kind": "audio"})
+            self.assertEqual(path.read_text(encoding="utf-8"), "broken")
+
+    def test_session_metadata_is_versioned_and_backed_up(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session = Path(tmpdir)
+            write_session_metadata(session, {"source_kind": "audio"})
+            write_session_metadata(session, {"source_kind": "transcript_text"})
+
+            payload = load_session_metadata(session)
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["document_type"], "session_source_metadata")
+            backup = json.loads((session / "source_metadata.json.bak").read_text(encoding="utf-8"))
+            self.assertEqual(backup["source_kind"], "audio")
+
     def test_read_text_file_rejects_size_before_materializing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "large.txt"

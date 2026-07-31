@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from durable_storage import atomic_write_json
 from meetingbot_config import (
     CODEX_BIN,
     LLM_API_BASE,
@@ -255,10 +256,7 @@ def _write_text_atomic(path: Path, text: str) -> None:
 
 
 def write_json_atomic(path: Path, data: Any) -> None:
-    _write_text_atomic(
-        path,
-        json.dumps(data, ensure_ascii=False, indent=2),
-    )
+    atomic_write_json(path, data)
 
 
 def _validate_json_text(text: str, schema_path: Optional[Path]) -> Any:

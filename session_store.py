@@ -1,5 +1,4 @@
 import hashlib
-import json
 import re
 import shutil
 import uuid
@@ -8,6 +7,12 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from meetingbot_config import BASE_DIR, SESSION_DIR, TRANSCRIPT_MAX_CHARACTERS, TRANSCRIPT_MAX_MB
+from durable_storage import (
+    DataStoreError,
+    atomic_write_text,
+    read_versioned_json_object,
+    write_versioned_json_object,
+)
 
 
 LATEST_SESSION_FILE = BASE_DIR / "latest_session.txt"
@@ -27,14 +32,7 @@ def latest_session_file(session_scope: Optional[str] = None) -> Path:
 
 
 def _write_latest_session_file(path: Path, session_path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary.write_text(str(session_path), encoding="utf-8")
-        temporary.chmod(0o600)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_write_text(path, str(session_path))
 
 
 def _is_session_directory(path: Path) -> bool:
@@ -106,18 +104,20 @@ def text_sha256(text: str) -> str:
 
 def write_session_metadata(session_path: Path, metadata: Dict) -> None:
     path = session_path / "source_metadata.json"
-    path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_versioned_json_object(
+        path,
+        metadata,
+        document_type="session_source_metadata",
+    )
 
 
 def load_session_metadata(session_path: Path) -> Dict:
     path = session_path / "source_metadata.json"
-    if not path.exists():
-        return {}
-
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return read_versioned_json_object(
+        path,
+        document_type="session_source_metadata",
+        missing={},
+    )
 
 
 def canonical_transcript_source_text(text: str) -> str:
@@ -184,7 +184,11 @@ def find_reusable_session(
         if not session_has_transcript(session_path):
             continue
 
-        metadata = load_session_metadata(session_path)
+        try:
+            metadata = load_session_metadata(session_path)
+        except DataStoreError as error:
+            print(f"[Reuse] 跳过元数据损坏的历史会话：{session_path} {error}")
+            continue
         if scope_digest and metadata.get("session_scope_sha256") != scope_digest:
             continue
         if (

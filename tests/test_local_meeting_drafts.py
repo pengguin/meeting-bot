@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import local_meeting_drafts
+from durable_storage import DataCorruptionError
 from local_meeting_drafts import (
     CHECKPOINT_FILENAME,
     REQUEST_FILENAME,
@@ -33,6 +34,8 @@ class WriteLocalMeetingRequestTests(unittest.TestCase):
             # formats 落盘为稳定排序，便于比对与复现。
             self.assertEqual(data["formats"], ["docx", "html", "pdf"])
             self.assertTrue(data["updated_at"])
+            self.assertEqual(data["schema_version"], 1)
+            self.assertEqual(data["document_type"], "local_meeting_request")
 
     def test_overwrites_previous_request(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,8 +108,19 @@ class WriteLocalMeetingStateTests(unittest.TestCase):
             write_local_meeting_state(session_path, self._payload())
             write_local_meeting_request(session_path, "标题", "auto", {"html"})
 
-            names = sorted(p.name for p in session_path.iterdir())
+            names = sorted(p.name for p in session_path.iterdir() if not p.name.startswith("."))
             self.assertEqual(names, [REQUEST_FILENAME, STATE_FILENAME])
+
+    def test_corrupt_state_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session_path = Path(tmp)
+            state_path = session_path / STATE_FILENAME
+            state_path.write_text("broken", encoding="utf-8")
+
+            with self.assertRaises(DataCorruptionError):
+                write_local_meeting_state(session_path, self._payload(task_status="error"))
+
+            self.assertEqual(state_path.read_text(encoding="utf-8"), "broken")
 
 
 if __name__ == "__main__":

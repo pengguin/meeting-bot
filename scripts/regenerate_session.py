@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from durable_storage import atomic_write_json, atomic_write_text
 from report_export import (
     convert_docx_to_pdf,
     generate_formal_minutes_docx,
@@ -29,11 +30,7 @@ from speaker_naming import anonymous_speaker_label
 
 
 def save_speaker_map(session_path: Path, speaker_map: dict[str, str]) -> None:
-    path = session_path / "speaker_map.json"
-    path.write_text(
-        json.dumps(speaker_map, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(session_path / "speaker_map.json", speaker_map)
 
 
 def render_transcript_markdown(
@@ -113,7 +110,7 @@ def load_transcript(
         title = "完整转录稿（已标注说话人身份）" if named else "完整转录稿（匿名说话人版）"
         transcript = render_transcript_markdown(segments, speaker_map, title)
         output_path = session_path / ("transcript_named.md" if named else "transcript_anon.md")
-        output_path.write_text(transcript, encoding="utf-8")
+        atomic_write_text(output_path, transcript)
         return transcript, speaker_map
 
     preferred = session_path / ("transcript_named.md" if named else "transcript_anon.md")

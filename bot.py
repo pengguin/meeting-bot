@@ -19,6 +19,7 @@ from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 from audio_pipeline import AudioPipeline
 from feishu_io import FeishuIO, ReferencedMessageAuthorizationError
 from llm_backend import llm_runtime_description, run_llm, write_json_atomic
+from durable_storage import atomic_write_text
 from markdown_safety import markdown_literal
 from runtime_status import RuntimeStatusWriter, runtime_timestamp
 from speaker_naming import build_anonymous_speaker_map
@@ -236,10 +237,7 @@ def assign_speakers_to_transcript(
         )
 
     out_path = session_path / "transcript_with_speaker_raw.json"
-    out_path.write_text(
-        json.dumps(merged, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(out_path, merged)
 
     return merged
 
@@ -268,11 +266,7 @@ def load_speaker_map(session_path: Path) -> Dict[str, str]:
 
 
 def save_speaker_map(session_path: Path, speaker_map: Dict[str, str]) -> None:
-    path = session_path / "speaker_map.json"
-    path.write_text(
-        json.dumps(speaker_map, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(session_path / "speaker_map.json", speaker_map)
 
 
 def format_timestamp(seconds: float) -> str:
@@ -347,7 +341,7 @@ def save_transcript_versions(
     )
 
     path = session_path / filename
-    path.write_text(markdown, encoding="utf-8")
+    atomic_write_text(path, markdown)
     return markdown
 
 
@@ -1073,7 +1067,7 @@ def generate_report_from_transcript(
     )
     summary_text = render_report_for_feishu(report)
     summary_name = "summary_named.txt" if named else "summary_anon.txt"
-    (session_path / summary_name).write_text(summary_text, encoding="utf-8")
+    atomic_write_text(session_path / summary_name, summary_text)
 
     reply_text(message_id, build_classification_notice(classification))
     if speaker_map:
@@ -1142,8 +1136,8 @@ def process_text_transcript_material(
                 "session_scope_sha256": session_scope_digest(session_scope),
             },
         )
-        (session_path / "uploaded_transcript.txt").write_text(text.strip(), encoding="utf-8")
-        (session_path / "transcript_anon.md").write_text(normalized, encoding="utf-8")
+        atomic_write_text(session_path / "uploaded_transcript.txt", text.strip())
+        atomic_write_text(session_path / "transcript_anon.md", normalized)
 
         merged_segments = create_text_segments_from_transcript(text, session_path)
         speaker_map = ensure_speaker_map_for_text_session(session_path, merged_segments)
@@ -1458,10 +1452,7 @@ def regenerate_named_outputs(
             named=True,
         )
         summary_named_text = render_report_for_feishu(report_named)
-        (session_path / "summary_named.txt").write_text(
-            summary_named_text,
-            encoding="utf-8",
-        )
+        atomic_write_text(session_path / "summary_named.txt", summary_named_text)
 
         reply_text(message_id, "已生成更新身份后的智能会议摘要。完整转录稿默认不在对话框中展开，可在会议目录中查看 transcript_named.md。")
         reply_long_text(message_id, summary_named_text)

@@ -29,6 +29,8 @@ def test_status_and_completion_event_are_written_atomically(tmp_path):
     assert status["session_id"] == "session-1"
     assert status["source"] == "test"
     assert status["stage"] == "transcribing"
+    assert status["schema_version"] == 1
+    assert status["document_type"] == "runtime_status"
     assert not list(writer.runtime_dir.glob("*.tmp"))
 
     docx = session / "minutes.docx"
@@ -47,6 +49,7 @@ def test_status_and_completion_event_are_written_atomically(tmp_path):
     event = json.loads(events[0].read_text(encoding="utf-8"))
     assert event["report_title"] == "测试会议"
     assert event["version"] == "anonymous"
+    assert event["document_type"] == "runtime_event"
 
 
 def test_stale_processing_status_returns_to_idle(tmp_path):

@@ -1,9 +1,10 @@
 import fcntl
-import json
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
+
+from durable_storage import DataStoreError, atomic_write_json, read_json_object
 
 
 def runtime_timestamp() -> str:
@@ -48,6 +49,8 @@ class RuntimeStatusWriter:
         try:
             self.runtime_dir.mkdir(parents=True, exist_ok=True)
             payload = {
+                "schema_version": 1,
+                "document_type": "runtime_status",
                 "service_status": service_status,
                 "task_status": task_status,
                 "stage": stage,
@@ -61,12 +64,7 @@ class RuntimeStatusWriter:
                 "updated_at": runtime_timestamp(),
                 "source": self.source,
             }
-            tmp_path = self.runtime_dir / f".status_{uuid.uuid4().hex}.json.tmp"
-            tmp_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            tmp_path.replace(self.status_file)
+            atomic_write_json(self.status_file, payload)
         except Exception as exc:
             print(f"[Runtime Status] 写入失败：{exc}")
 
@@ -112,13 +110,13 @@ class RuntimeStatusWriter:
     def write_idle_if_no_active_task(self) -> None:
         try:
             if self.status_file.exists():
-                current = json.loads(self.status_file.read_text(encoding="utf-8"))
+                current = read_json_object(self.status_file)
                 if (
                     current.get("task_status") == "processing"
                     and self.local_meeting_task_is_alive()
                 ):
                     return
-        except (OSError, json.JSONDecodeError):
+        except DataStoreError:
             pass
         self.write_status(
             task_status="idle",
@@ -147,6 +145,8 @@ class RuntimeStatusWriter:
             event_path = self.events_dir / filename
             tmp_path = self.events_dir / f".{filename}.tmp"
             payload = {
+                "schema_version": 1,
+                "document_type": "runtime_event",
                 "event": "meeting_done",
                 "session_id": session_path.name,
                 "session_dir": str(session_path),
@@ -158,10 +158,6 @@ class RuntimeStatusWriter:
                 "summary_md": str(md_path) if md_path else "",
                 "created_at": runtime_timestamp(),
             }
-            tmp_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            tmp_path.replace(event_path)
+            atomic_write_json(event_path, payload)
         except Exception as exc:
             print(f"[Runtime Event] 写入失败：{exc}")

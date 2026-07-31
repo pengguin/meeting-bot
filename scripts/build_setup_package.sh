@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="会议纪要助手"
-VERSION="0.5.2"
+VERSION="0.6.0"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP_ROOT="$PROJECT_ROOT/dist/setup"
 DMG_STAGING="$SETUP_ROOT/dmg"
