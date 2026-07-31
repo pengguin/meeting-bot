@@ -45,6 +45,7 @@ class RuntimeStatusWriter:
         latest_html: str = "",
         latest_md: str = "",
         service_status: str = "running",
+        task_id: str = "",
     ) -> None:
         try:
             self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -63,6 +64,7 @@ class RuntimeStatusWriter:
                 "latest_md": latest_md,
                 "updated_at": runtime_timestamp(),
                 "source": self.source,
+                "task_id": task_id,
             }
             atomic_write_json(self.status_file, payload)
         except Exception as exc:
@@ -78,6 +80,7 @@ class RuntimeStatusWriter:
         latest_docx: Optional[Path] = None,
         latest_html: Optional[Path] = None,
         latest_md: Optional[Path] = None,
+        task_id: str = "",
     ) -> None:
         fields = self.session_fields(session_path)
         self.write_status(
@@ -90,6 +93,7 @@ class RuntimeStatusWriter:
             latest_docx=str(latest_docx) if latest_docx else "",
             latest_html=str(latest_html) if latest_html else "",
             latest_md=str(latest_md) if latest_md else "",
+            task_id=task_id,
         )
 
     def local_meeting_task_is_alive(self) -> bool:

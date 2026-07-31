@@ -278,12 +278,14 @@ private struct DiscussionTopicSnapshot: Decodable {
 }
 
 private struct LocalMeetingStateSnapshot: Decodable {
+    let taskID: String?
     let taskStatus: String?
     let stage: String?
     let message: String?
     let updatedAt: String?
 
     enum CodingKeys: String, CodingKey {
+        case taskID = "task_id"
         case taskStatus = "task_status"
         case stage
         case message
@@ -1176,6 +1178,13 @@ final class MeetingLibraryStore: ObservableObject {
            !formats.isEmpty {
             arguments.append(contentsOf: ["--formats", formats.sorted().joined(separator: ",")])
         }
+        let localState = Self.decodeLocalMeetingState(in: meeting.sessionURL)
+        let reusableTaskID = ["error", "paused"].contains(localState?.taskStatus ?? "")
+            ? localState?.taskID
+            : nil
+        let taskID = reusableTaskID
+            ?? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        arguments.append(contentsOf: ["--task-id", taskID])
         let process = Process()
         process.executableURL = python
         process.arguments = arguments
@@ -1413,6 +1422,14 @@ final class MeetingLibraryStore: ObservableObject {
             "--formats",
             request.exportFormats.sorted().joined(separator: ","),
         ]
+        let existingTaskID = reuseSessionURL
+            .flatMap { Self.decodeLocalMeetingState(in: $0)?.taskID }
+            .flatMap { value in
+                let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return normalized.isEmpty ? nil : normalized
+            }
+        let taskID = existingTaskID ?? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        arguments.append(contentsOf: ["--task-id", taskID])
         if let reuseSessionURL {
             arguments.append(contentsOf: ["--session", reuseSessionURL.path])
         }

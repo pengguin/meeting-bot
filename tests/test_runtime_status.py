@@ -24,6 +24,7 @@ def test_status_and_completion_event_are_written_atomically(tmp_path):
         stage="transcribing",
         message="正在转写 50%",
         session_path=session,
+        task_id="task-1",
     )
     status = json.loads(writer.status_file.read_text(encoding="utf-8"))
     assert status["session_id"] == "session-1"
@@ -31,6 +32,7 @@ def test_status_and_completion_event_are_written_atomically(tmp_path):
     assert status["stage"] == "transcribing"
     assert status["schema_version"] == 1
     assert status["document_type"] == "runtime_status"
+    assert status["task_id"] == "task-1"
     assert not list(writer.runtime_dir.glob("*.tmp"))
 
     docx = session / "minutes.docx"

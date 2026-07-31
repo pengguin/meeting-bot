@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import json
 import sys
+import uuid
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,10 @@ from local_meeting_drafts import (
 from markdown_safety import markdown_literal
 from meetingbot_config import RUNTIME_DIR
 from speaker_naming import anonymous_speaker_label
+from task_ledger import InvalidTaskTransition, TaskLedger
+
+
+ACTIVE_TASK_ID = ""
 
 
 def save_speaker_map(session_path: Path, speaker_map: dict[str, str]) -> None:
@@ -249,6 +254,7 @@ def write_draft_state(
             "latest_md": result.get("md", ""),
             "updated_at": runtime_timestamp(),
             "source": "local_meeting",
+            "task_id": ACTIVE_TASK_ID,
         },
     )
 
@@ -274,6 +280,7 @@ def load_speaker_overrides(raw_path: str) -> dict[str, str]:
 
 
 def main() -> None:
+    global ACTIVE_TASK_ID
     parser = argparse.ArgumentParser()
     parser.add_argument("--session", required=True)
     parser.add_argument("--template", required=True)
@@ -293,6 +300,7 @@ def main() -> None:
         default="",
         help="需要重新生成的导出格式，逗号分隔；留空时沿用已有文件。",
     )
+    parser.add_argument("--task-id", default="")
     args = parser.parse_args()
     session_path = Path(args.session)
     is_local_draft = (session_path / "local_meeting_request.json").exists()
@@ -303,11 +311,41 @@ def main() -> None:
     }
     speaker_overrides = load_speaker_overrides(args.speaker_map_file)
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    ledger = TaskLedger(RUNTIME_DIR / "tasks")
+    requested_task_id = args.task_id.strip()
+    if not requested_task_id:
+        requested_task_id = uuid.uuid4().hex
+    task, created = ledger.submit(
+        source="local",
+        kind="regenerate_report",
+        idempotency_key=f"local-task:{requested_task_id}",
+        principal="menu-bar-app",
+        metadata={"session_id": session_path.name},
+        task_id=requested_task_id,
+    )
+    if not created:
+        if task.get("status") in {"paused", "failed", "waiting_user", "cancelled"}:
+            task = ledger.retry(task["task_id"])
+        elif task.get("status") != "queued":
+            raise InvalidTaskTransition(f"任务当前状态不可继续：{task.get('status')}")
+    ACTIVE_TASK_ID = task["task_id"]
+    ledger.start(ACTIVE_TASK_ID, worker_id="local-report-process")
+    ledger.update_stage(
+        ACTIVE_TASK_ID,
+        "generating_report",
+        artifacts={"session_dir": str(session_path)},
+    )
     lock_handle = (RUNTIME_DIR / "local_meeting.lock").open("a+", encoding="utf-8")
     try:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         lock_handle.close()
+        ledger.fail(
+            ACTIVE_TASK_ID,
+            code="local_task_busy",
+            message="已有会议正在处理，请等待完成后再重试",
+            retryable=True,
+        )
         raise RuntimeError("已有会议正在处理，请等待完成后再重试")
 
     try:
@@ -334,7 +372,20 @@ def main() -> None:
                 "本地新增会议已生成",
                 result,
             )
-        print(json.dumps(result, ensure_ascii=False))
+        ledger.complete(
+            ACTIVE_TASK_ID,
+            artifacts={
+                "session_dir": str(session_path),
+                "docx": str(result.get("docx", "")),
+                "pdf": str(result.get("pdf", "")),
+                "html": str(result.get("html", "")),
+                "md": str(result.get("md", "")),
+            },
+        )
+        try:
+            print(json.dumps(result, ensure_ascii=False))
+        except BrokenPipeError:
+            pass
     except Exception as error:
         if is_local_draft:
             write_draft_state(
@@ -342,6 +393,13 @@ def main() -> None:
                 "error",
                 "generating_report",
                 f"生成纪要失败：{error}",
+            )
+        if ledger.get(ACTIVE_TASK_ID).get("status") == "running":
+            ledger.fail(
+                ACTIVE_TASK_ID,
+                code=type(error).__name__,
+                message=str(error),
+                retryable=True,
             )
         raise
     finally:

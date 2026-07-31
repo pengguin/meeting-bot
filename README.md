@@ -75,7 +75,7 @@ LLM_MODEL=           # openai 兼容服务必填；本地服务可留空自动�
 python3 -m pip install -r requirements-dev.txt
 python3 -m pytest tests -q
 bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhouse.sh scripts/doctor.sh scripts/install_optional_tools.sh scripts/preflight.sh scripts/upgrade.sh start_bot.sh
-python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py scripts/generate_release_manifest.py scripts/data_recovery.py bot.py feishu_io.py audio_pipeline.py runtime_status.py durable_storage.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
+python3 -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py scripts/generate_release_manifest.py scripts/data_recovery.py scripts/task_control.py bot.py feishu_io.py audio_pipeline.py runtime_status.py durable_storage.py task_ledger.py task_runtime.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
 ```
 
 ## 发布

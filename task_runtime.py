@@ -1,14 +1,14 @@
 """Bounded background execution and persistent Feishu message deduplication."""
 from __future__ import annotations
 
-import json
 import threading
 import time
-import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
+
+from durable_storage import DataStoreError, atomic_write_json, read_json_object
 
 
 class PersistentMessageDeduplicator:
@@ -22,8 +22,8 @@ class PersistentMessageDeduplicator:
 
     def _load(self) -> None:
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            raw = read_json_object(self.path, missing={})
+        except DataStoreError:
             return
         now = time.time()
         for message_id, timestamp in raw.items() if isinstance(raw, dict) else []:
@@ -56,10 +56,7 @@ class PersistentMessageDeduplicator:
                 self._persist()
 
     def _persist(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.parent / f".{self.path.name}.{uuid.uuid4().hex}.tmp"
-        tmp.write_text(json.dumps(self._entries, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(self.path)
+        atomic_write_json(self.path, self._entries, sort_keys=False)
 
 
 class BoundedTaskExecutor:

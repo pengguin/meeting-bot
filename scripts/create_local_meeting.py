@@ -21,6 +21,7 @@ os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
 from durable_storage import DataStoreError, atomic_write_json, atomic_write_text, read_json_object
+from task_ledger import TaskLedger, InvalidTaskTransition
 from chinese_text import simplify_chinese
 from audio_pipeline import AudioPipeline
 from llm_backend import SchemaValidationError, validate_json_data, write_json_atomic
@@ -85,6 +86,9 @@ LOCAL_AUDIO_LIMITS = AudioPipeline(
     stage_timeout_seconds=AUDIO_STAGE_TIMEOUT_SECONDS,
 )
 
+ACTIVE_TASK_LEDGER: Optional[TaskLedger] = None
+ACTIVE_TASK_ID = ""
+
 
 def acquire_local_meeting_lock():
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
@@ -116,6 +120,7 @@ def emit_progress(stage: str, message: str, session_path: Optional[Path] = None)
                         "message": message,
                         "session_id": session_path.name if session_path else "",
                         "session_dir": str(session_path) if session_path else "",
+                        "task_id": ACTIVE_TASK_ID,
                     }
                 },
                 ensure_ascii=False,
@@ -153,11 +158,26 @@ def write_runtime_status(
         "latest_md": str(latest_md) if latest_md else "",
         "updated_at": runtime_timestamp(),
         "source": "local_meeting",
+        "task_id": ACTIVE_TASK_ID,
     }
     atomic_write_json(RUNTIME_STATUS_FILE, payload)
     # 把状态也写到会话目录，作为草稿会议的状态快照（供前端识别草稿、判断能否重试）。
     if session_path is not None:
         write_local_meeting_state(session_path, payload)
+    if task_status == "processing" and ACTIVE_TASK_LEDGER is not None and ACTIVE_TASK_ID:
+        current = ACTIVE_TASK_LEDGER.get(ACTIVE_TASK_ID)
+        artifacts = {"session_dir": str(session_path)} if session_path else {}
+        artifacts_changed = any(
+            str(current.get("artifacts", {}).get(key, "")) != value
+            for key, value in artifacts.items()
+        )
+        if current.get("stage") != stage or artifacts_changed:
+            ACTIVE_TASK_LEDGER.update_stage(
+                ACTIVE_TASK_ID,
+                stage,
+                artifacts=artifacts or None,
+                message=message,
+            )
     emit_progress(stage, message, session_path)
 
 
@@ -173,6 +193,15 @@ def load_json(path: Path, expected_type):
 
 def checkpoint(session_path: Path, stage: str, completed_stage: Optional[str] = None) -> None:
     write_local_meeting_checkpoint(session_path, stage, completed_stage)
+    if ACTIVE_TASK_LEDGER is not None and ACTIVE_TASK_ID:
+        current = ACTIVE_TASK_LEDGER.get(ACTIVE_TASK_ID)
+        if current.get("status") == "running":
+            ACTIVE_TASK_LEDGER.update_stage(
+                ACTIVE_TASK_ID,
+                stage,
+                checkpoint=completed_stage or str(current.get("checkpoint", "")),
+                artifacts={"session_dir": str(session_path)},
+            )
 
 
 def write_meeting_done_event(
@@ -685,6 +714,7 @@ def install_termination_handler() -> None:
 
 
 def main() -> None:
+    global ACTIVE_TASK_ID, ACTIVE_TASK_LEDGER
     become_process_group_leader()
     install_termination_handler()
 
@@ -696,6 +726,7 @@ def main() -> None:
     parser.add_argument("--formats", default="html,docx")
     # 草稿「重新处理」：复用已有会话目录原地重跑（仅录音流程使用）。
     parser.add_argument("--session", default="")
+    parser.add_argument("--task-id", default="")
     args = parser.parse_args()
 
     audio_path = Path(args.audio).expanduser() if args.audio else None
@@ -712,9 +743,29 @@ def main() -> None:
     if reuse_session is not None and not reuse_session.is_dir():
         raise RuntimeError("待重新处理的会话目录不存在")
 
-    lock_handle = acquire_local_meeting_lock()
+    ledger = TaskLedger(RUNTIME_DIR / "tasks")
+    requested_task_id = args.task_id.strip() or uuid.uuid4().hex
+    task, created = ledger.submit(
+        source="local",
+        kind="transcript" if transcript_path is not None else "audio",
+        idempotency_key=f"local-task:{requested_task_id}",
+        principal="menu-bar-app",
+        metadata={"reuse_session": reuse_session.name if reuse_session else ""},
+        task_id=requested_task_id,
+    )
+    if not created:
+        if task.get("status") in {"paused", "failed", "waiting_user", "cancelled"}:
+            task = ledger.retry(task["task_id"])
+        elif task.get("status") != "queued":
+            raise InvalidTaskTransition(f"任务当前状态不可继续：{task.get('status')}")
+    ACTIVE_TASK_LEDGER = ledger
+    ACTIVE_TASK_ID = task["task_id"]
+    ledger.start(ACTIVE_TASK_ID, worker_id="local-meeting-process", pid=os.getpid())
+
+    lock_handle = None
     session_path: Optional[Path] = None
     try:
+        lock_handle = acquire_local_meeting_lock()
         if transcript_path is not None:
             write_runtime_status("processing", "importing_transcript", "正在导入转录稿")
             session_path, transcript_markdown, speaker_map = create_session_from_transcript(
@@ -745,7 +796,20 @@ def main() -> None:
             template=args.template,
             formats=formats,
         )
-        print(json.dumps(result, ensure_ascii=False))
+        ledger.complete(
+            ACTIVE_TASK_ID,
+            artifacts={
+                "session_dir": str(session_path),
+                "docx": str(result.get("docx", "")),
+                "pdf": str(result.get("pdf", "")),
+                "html": str(result.get("html", "")),
+                "md": str(result.get("md", "")),
+            },
+        )
+        try:
+            print(json.dumps(result, ensure_ascii=False))
+        except BrokenPipeError:
+            pass
     except (KeyboardInterrupt, SystemExit):
         # 0.4 起中止等同暂停：保留原录音和已完成阶段，稍后从检查点继续。
         if session_path is not None:
@@ -757,6 +821,7 @@ def main() -> None:
             "处理已暂停，可在会议库中继续" if session_path is not None else "新增会议处理已中止",
             session_path,
         )
+        ledger.pause(ACTIVE_TASK_ID, "处理已暂停，可从检查点继续")
         raise
     except Exception as error:
         write_runtime_status(
@@ -765,10 +830,18 @@ def main() -> None:
             f"新增会议失败：{error}",
             session_path,
         )
+        if ledger.get(ACTIVE_TASK_ID).get("status") == "running":
+            ledger.fail(
+                ACTIVE_TASK_ID,
+                code=type(error).__name__,
+                message=str(error),
+                retryable=True,
+            )
         raise
     finally:
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-        lock_handle.close()
+        if lock_handle is not None:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
 
 
 if __name__ == "__main__":

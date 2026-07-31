@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import threading
 import uuid
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -73,6 +74,13 @@ from transcript_material import (
     create_text_segments_from_transcript,
     normalize_uploaded_transcript_text,
 )
+from task_ledger import (
+    TaskLedger,
+    TaskLedgerError,
+    active_task_id,
+    bind_task,
+    update_active_task,
+)
 from task_runtime import BoundedTaskExecutor, PersistentMessageDeduplicator
 
 
@@ -88,15 +96,131 @@ MESSAGE_TASKS = BoundedTaskExecutor(
     max_pending=TASK_MAX_PENDING,
     max_pending_per_principal=TASK_MAX_PENDING_PER_PRINCIPAL,
 )
+TASK_LEDGER = TaskLedger(RUNTIME_DIR / "tasks")
+RECOVERED_TASKS = TASK_LEDGER.audit_unfinished()
+if RECOVERED_TASKS:
+    print(f"[Task Ledger] 已审计 {len(RECOVERED_TASKS)} 个中断任务")
 RUNTIME_STATUS = RuntimeStatusWriter(
     runtime_dir=RUNTIME_DIR,
     status_file=RUNTIME_STATUS_FILE,
     events_dir=RUNTIME_EVENTS_DIR,
     source="feishu_bot",
 )
-write_runtime_status = RUNTIME_STATUS.write_status
-write_session_runtime_status = RUNTIME_STATUS.write_session_status
-write_meeting_done_event = RUNTIME_STATUS.write_meeting_done_event
+
+
+def write_runtime_status(
+    task_status: str,
+    stage: str,
+    message: str,
+    session_id: str = "",
+    session_dir: str = "",
+    latest_pdf: str = "",
+    latest_docx: str = "",
+    latest_html: str = "",
+    latest_md: str = "",
+    service_status: str = "running",
+) -> None:
+    RUNTIME_STATUS.write_status(
+        task_status=task_status,
+        stage=stage,
+        message=message,
+        session_id=session_id,
+        session_dir=session_dir,
+        latest_pdf=latest_pdf,
+        latest_docx=latest_docx,
+        latest_html=latest_html,
+        latest_md=latest_md,
+        service_status=service_status,
+        task_id=active_task_id(),
+    )
+    if task_status == "processing":
+        artifacts = {"session_dir": session_dir} if session_dir else None
+        update_active_task(stage, artifacts=artifacts, message=message)
+
+
+def write_session_runtime_status(
+    task_status: str,
+    stage: str,
+    message: str,
+    session_path: Optional[Path],
+    latest_pdf: Optional[Path] = None,
+    latest_docx: Optional[Path] = None,
+    latest_html: Optional[Path] = None,
+    latest_md: Optional[Path] = None,
+) -> None:
+    RUNTIME_STATUS.write_session_status(
+        task_status=task_status,
+        stage=stage,
+        message=message,
+        session_path=session_path,
+        latest_pdf=latest_pdf,
+        latest_docx=latest_docx,
+        latest_html=latest_html,
+        latest_md=latest_md,
+        task_id=active_task_id(),
+    )
+    if task_status == "processing":
+        artifacts = {"session_dir": str(session_path)} if session_path else None
+        update_active_task(stage, artifacts=artifacts, message=message)
+
+
+def write_meeting_done_event(
+    session_path: Path,
+    report: Dict,
+    docx_path: Path,
+    pdf_path: Optional[Path],
+    html_path: Path,
+    md_path: Optional[Path],
+    named: bool,
+) -> None:
+    RUNTIME_STATUS.write_meeting_done_event(
+        session_path=session_path,
+        report=report,
+        docx_path=docx_path,
+        pdf_path=pdf_path,
+        html_path=html_path,
+        md_path=md_path,
+        named=named,
+    )
+    update_active_task(
+        "exported",
+        checkpoint="exported",
+        artifacts={
+            "session_dir": str(session_path),
+            "docx": str(docx_path),
+            "pdf": str(pdf_path) if pdf_path else "",
+            "html": str(html_path),
+            "md": str(md_path) if md_path else "",
+        },
+        message="会议产物已生成",
+    )
+
+
+def execute_feishu_task(task_id: str, function, *args) -> None:
+    try:
+        TASK_LEDGER.start(
+            task_id,
+            worker_id=f"feishu-thread-{threading.get_ident()}",
+            pid=os.getpid(),
+        )
+        with bind_task(TASK_LEDGER, task_id):
+            function(*args)
+        if TASK_LEDGER.get(task_id).get("status") == "running":
+            TASK_LEDGER.complete(task_id)
+    except Exception as error:
+        try:
+            if TASK_LEDGER.get(task_id).get("status") == "running":
+                TASK_LEDGER.fail(
+                    task_id,
+                    code=type(error).__name__,
+                    message=str(error),
+                    retryable=True,
+                )
+        except TaskLedgerError as ledger_error:
+            print(f"[Task Ledger] 记录失败状态时出错：{ledger_error}")
+        print(f"[Task Ledger] 任务 {task_id} 执行失败：{error}")
+
+
 RUNTIME_STATUS.write_idle_if_no_active_task()
 
 
@@ -1161,6 +1285,9 @@ def process_text_transcript_material(
             session_path=session_path,
         )
         reply_text(message_id, error_msg)
+        raise
+
+
 def process_audio_message(
     message_id: str,
     message_type: str,
@@ -1187,7 +1314,7 @@ def process_audio_message(
             )
             reply_text(message_id, "未能读取 file_key，无法下载录音或文件。")
             print("[Media] content =", content)
-            return
+            raise RuntimeError("未能读取 file_key，无法下载录音或文件")
 
         force_retranscribe = is_force_retranscribe(command_text)
 
@@ -1346,6 +1473,7 @@ def process_audio_message(
             session_path=session_path,
         )
         reply_text(message_id, error_msg)
+        raise
     finally:
         FEISHU_IO.cleanup_download(downloaded_audio)
 
@@ -1665,16 +1793,60 @@ def feishu_session_scope(data: P2ImMessageReceiveV1) -> str:
 
     return f"feishu:message:{message.message_id}"
 
+
+def submit_feishu_task(
+    *,
+    message_id: str,
+    message_type: str,
+    session_scope: str,
+    function,
+    arguments: tuple,
+) -> bool:
+    task, created = TASK_LEDGER.submit(
+        source="feishu",
+        kind=message_type,
+        idempotency_key=f"feishu-message:{message_id}",
+        principal=session_scope,
+        metadata={"message_type": message_type},
+    )
+    if not created:
+        error = task.get("error", {})
+        if task.get("status") == "failed" and error.get("code") == "queue_full":
+            task = TASK_LEDGER.retry(task["task_id"])
+        else:
+            print(f"[Task Ledger] 跳过已登记消息：{message_id} task={task['task_id']}")
+            return True
+    if not MESSAGE_DEDUPLICATOR.claim(message_id):
+        TASK_LEDGER.cancel(task["task_id"], "历史去重记录已包含该消息")
+        print(f"[Dedup] 跳过重复消息：{message_id}")
+        return True
+
+    accepted = MESSAGE_TASKS.submit(
+        execute_feishu_task,
+        task["task_id"],
+        function,
+        *arguments,
+        principal=session_scope,
+    )
+    if accepted:
+        return True
+
+    TASK_LEDGER.fail(
+        task["task_id"],
+        code="queue_full",
+        message="当前任务队列已满，请稍后重新发送",
+        retryable=True,
+    )
+    MESSAGE_DEDUPLICATOR.release(message_id)
+    return False
+
+
 def on_message_receive(data: P2ImMessageReceiveV1) -> None:
     try:
         message = data.event.message
         message_id = message.message_id
         message_type = message.message_type
         session_scope = feishu_session_scope(data)
-
-        if not MESSAGE_DEDUPLICATOR.claim(message_id):
-            print(f"[Dedup] 跳过重复消息：{message_id}")
-            return
 
         raw_content = message.content or "{}"
         content = json.loads(raw_content)
@@ -1683,32 +1855,25 @@ def on_message_receive(data: P2ImMessageReceiveV1) -> None:
 
         if message_type == "text":
             text = content.get("text", "")
-            accepted = MESSAGE_TASKS.submit(
-                handle_text_message,
-                message_id,
-                text,
-                content,
-                message,
-                session_scope,
-                principal=session_scope,
+            accepted = submit_feishu_task(
+                message_id=message_id,
+                message_type=message_type,
+                session_scope=session_scope,
+                function=handle_text_message,
+                arguments=(message_id, text, content, message, session_scope),
             )
             if not accepted:
-                MESSAGE_DEDUPLICATOR.release(message_id)
                 reply_text(message_id, "当前会话待处理任务较多，请稍后重新发送。")
 
         elif message_type in {"audio", "file"}:
-            accepted = MESSAGE_TASKS.submit(
-                process_audio_message,
-                message_id,
-                message_type,
-                content,
-                "",
-                None,
-                session_scope,
-                principal=session_scope,
+            accepted = submit_feishu_task(
+                message_id=message_id,
+                message_type=message_type,
+                session_scope=session_scope,
+                function=process_audio_message,
+                arguments=(message_id, message_type, content, "", None, session_scope),
             )
             if not accepted:
-                MESSAGE_DEDUPLICATOR.release(message_id)
                 reply_text(message_id, "当前会话待处理任务较多，请稍后重新发送。")
 
         else:

@@ -239,8 +239,9 @@ def atomic_write_json(
     backup: bool = False,
     protect_existing: bool = False,
     mode: int = 0o600,
+    sort_keys: bool = True,
 ) -> Path:
-    encoded = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+    encoded = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=sort_keys) + "\n").encode(
         "utf-8"
     )
     return atomic_write_bytes(

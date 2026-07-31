@@ -12,7 +12,7 @@ LEGACY_INSTALL_DIRS=(
 )
 SERVICE_LABEL="com.pgui.feishu-meeting-bot"
 PLIST_PATH="$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
-TARGET_VERSION="0.6.0"
+TARGET_VERSION="0.7.0"
 
 installed_version() {
   local version_file guide
