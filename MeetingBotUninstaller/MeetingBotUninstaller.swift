@@ -44,13 +44,25 @@ private struct ScanItem: Identifiable, Hashable {
     let url: URL
     let kind: ItemKind
     let backupPath: String?
+    let canModify: Bool
+    let preservationReason: String?
 
-    init(title: String, detail: String, url: URL, kind: ItemKind, backupPath: String? = nil) {
+    init(
+        title: String,
+        detail: String,
+        url: URL,
+        kind: ItemKind,
+        backupPath: String? = nil,
+        canModify: Bool = true,
+        preservationReason: String? = nil
+    ) {
         self.title = title
         self.detail = detail
         self.url = url.standardizedFileURL
         self.kind = kind
         self.backupPath = backupPath
+        self.canModify = canModify
+        self.preservationReason = preservationReason
         self.id = "\(kind.rawValue):\(self.url.path)"
     }
 }
@@ -219,6 +231,9 @@ private enum EnvParser {
 }
 
 private enum InstallationScanner {
+    private static let installOwnershipMarker = ".meetingbot-install-root"
+    private static let installOwnershipValue = "meeting-bot-exclusive-v1"
+
     static func scan() -> InstallationScan {
         let installRoots = findInstallRoots()
         var result = InstallationScan()
@@ -245,9 +260,42 @@ private enum InstallationScanner {
             candidates.append(contentsOf: launchAgentRoots)
         }
 
+        let knownRoots = [Constants.defaultInstallRoot] + Constants.legacyInstallRoots
         return PathTools.unique(candidates)
             .filter(PathTools.exists)
             .filter { !DevelopmentProtector.isProtectedInstallRoot($0) }
+            .filter { candidate in
+                knownRoots.contains { PathTools.resolved($0) == PathTools.resolved(candidate) }
+                    || isExclusiveCustomInstallRoot(candidate)
+            }
+    }
+
+    private static func isExclusiveCustomInstallRoot(_ candidate: URL) -> Bool {
+        let resolved = PathTools.resolved(candidate)
+        let protectedRoots = [
+            Constants.home,
+            Constants.applicationSupportRoot,
+            Constants.developerRoot,
+            Constants.home.appendingPathComponent("Desktop", isDirectory: true),
+            Constants.home.appendingPathComponent("Documents", isDirectory: true),
+            Constants.home.appendingPathComponent("Downloads", isDirectory: true),
+            Constants.home.appendingPathComponent("Movies", isDirectory: true),
+            Constants.home.appendingPathComponent("Music", isDirectory: true),
+            Constants.home.appendingPathComponent("Pictures", isDirectory: true),
+        ].map(PathTools.resolved)
+        guard !protectedRoots.contains(resolved) else {
+            return false
+        }
+
+        let marker = candidate.appendingPathComponent(installOwnershipMarker)
+        guard let markerValue = try? String(contentsOf: marker, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            markerValue == installOwnershipValue else {
+            return false
+        }
+        return PathTools.exists(candidate.appendingPathComponent("bot.py"))
+            && PathTools.exists(candidate.appendingPathComponent("start_bot.sh"))
+            && PathTools.exists(candidate.appendingPathComponent("scripts/install.sh"))
     }
 
     private static func rootsFromLaunchAgent(_ plistURL: URL) -> [URL]? {
@@ -438,13 +486,15 @@ private enum InstallationScanner {
                 &items,
                 title: "录音和上传材料（自定义位置）",
                 url: recordings,
-                backupName: "custom-data/\(PathTools.sanitizedName(recordings.lastPathComponent.isEmpty ? "recordings" : recordings.lastPathComponent))"
+                backupName: "custom-data/\(PathTools.sanitizedName(recordings.lastPathComponent.isEmpty ? "recordings" : recordings.lastPathComponent))",
+                canModify: isManagedDataPath(recordings, installRoot: root)
             )
             appendDataDirectory(
                 &items,
                 title: "会议纪要（自定义位置）",
                 url: meetings,
-                backupName: "custom-data/\(PathTools.sanitizedName(meetings.lastPathComponent.isEmpty ? "sessions" : meetings.lastPathComponent))"
+                backupName: "custom-data/\(PathTools.sanitizedName(meetings.lastPathComponent.isEmpty ? "sessions" : meetings.lastPathComponent))",
+                canModify: isManagedDataPath(meetings, installRoot: root)
             )
             appendDataDirectory(
                 &items,
@@ -476,7 +526,8 @@ private enum InstallationScanner {
         _ items: inout [ScanItem],
         title: String,
         url: URL,
-        backupName: String
+        backupName: String,
+        canModify: Bool = true
     ) {
         appendExisting(
             &items,
@@ -484,8 +535,14 @@ private enum InstallationScanner {
             detail: PathTools.display(url),
             url: url,
             kind: .data,
-            backupPath: backupName
+            backupPath: backupName,
+            canModify: canModify,
+            preservationReason: canModify ? nil : "自定义目录位于安装目录之外，为避免影响其他文件将原地保留。"
         )
+    }
+
+    private static func isManagedDataPath(_ url: URL, installRoot: URL) -> Bool {
+        PathTools.isSubpath(PathTools.resolved(url), of: PathTools.resolved(installRoot))
     }
 
     private static func appendExisting(
@@ -494,12 +551,24 @@ private enum InstallationScanner {
         detail: String,
         url: URL,
         kind: ItemKind,
-        backupPath: String? = nil
+        backupPath: String? = nil,
+        canModify: Bool = true,
+        preservationReason: String? = nil
     ) {
         guard PathTools.exists(url) else {
             return
         }
-        items.append(ScanItem(title: title, detail: detail, url: url, kind: kind, backupPath: backupPath))
+        items.append(
+            ScanItem(
+                title: title,
+                detail: detail,
+                url: url,
+                kind: kind,
+                backupPath: backupPath,
+                canModify: canModify,
+                preservationReason: preservationReason
+            )
+        )
     }
 
     private static func uniqueItems(_ items: [ScanItem]) -> [ScanItem] {
@@ -692,6 +761,14 @@ private final class UninstallRunner {
         ]
 
         for item in scan.data where PathTools.exists(item.url) {
+            guard item.canModify else {
+                let reason = item.preservationReason ?? "该目录不属于应用安装目录。"
+                log("已原地保留 \(item.title)：\(PathTools.display(item.url))（\(reason)）")
+                manifestLines.append("- \(item.title)：原地保留")
+                manifestLines.append("  位置：\(item.url.path)")
+                manifestLines.append("  原因：\(reason)")
+                continue
+            }
             let backupPath = item.backupPath ?? item.url.lastPathComponent
             let target = try availableDestination(for: destination.appendingPathComponent(backupPath))
             try fileManager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -750,8 +827,17 @@ private final class UninstallRunner {
     }
 
     private func removeItems(_ items: [ScanItem], label: String) {
-        let urls = PathTools.unique(items.map(\.url))
-        for url in urls {
+        var seen = Set<String>()
+        for item in items {
+            let url = item.url.standardizedFileURL
+            guard seen.insert(url.path).inserted else {
+                continue
+            }
+            guard item.canModify else {
+                let reason = item.preservationReason ?? "该目录不属于应用安装目录。"
+                log("已原地保留 \(item.title)：\(PathTools.display(url))（\(reason)）")
+                continue
+            }
             removeURL(url, title: label)
         }
     }
@@ -950,8 +1036,8 @@ private struct UninstallerView: View {
                 VStack(spacing: 0) {
                     ForEach(items) { item in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
+                            Image(systemName: item.canModify ? "checkmark.circle.fill" : "lock.shield.fill")
+                                .foregroundStyle(item.canModify ? .green : .orange)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title)
                                     .font(.callout.weight(.medium))
@@ -960,6 +1046,11 @@ private struct UninstallerView: View {
                                     .foregroundStyle(.secondary)
                                     .textSelection(.enabled)
                                     .lineLimit(2)
+                                if let preservationReason = item.preservationReason {
+                                    Text(preservationReason)
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
                             }
                             Spacer()
                         }
@@ -992,8 +1083,8 @@ private struct UninstallerView: View {
 
             Toggle(isOn: $store.deleteData) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("删除会议数据、配置和日志")
-                    Text("关闭时会先把 `.env`、录音、纪要、会议库和日志移动到新的保存位置。")
+                    Text("删除应用管理的会议数据、配置和日志")
+                    Text("安装目录外的自定义保存位置始终原地保留；关闭时会先移动应用管理的数据。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1089,9 +1180,12 @@ private struct UninstallerView: View {
         var parts = ["将停止后台服务并删除会议纪要助手 App 与安装文件。"]
         parts.append(store.deleteEnvironment ? "Python 环境和依赖缓存会被删除。" : "Python 环境和依赖缓存会保留在原安装目录。")
         if store.deleteData {
-            parts.append("会议数据、配置和日志会被删除。")
+            parts.append("应用管理的会议数据、配置和日志会被删除。")
         } else {
-            parts.append("会议数据、配置和日志会移动到：\(store.dataDestination.path)")
+            parts.append("应用管理的会议数据、配置和日志会移动到：\(store.dataDestination.path)")
+        }
+        if store.scan.data.contains(where: { !$0.canModify }) {
+            parts.append("安装目录外的自定义数据目录会原地保留，不会移动或删除。")
         }
         return parts.joined(separator: "\n")
     }

@@ -17,12 +17,16 @@ import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 
 from audio_pipeline import AudioPipeline
-from feishu_io import FeishuIO
+from feishu_io import FeishuIO, ReferencedMessageAuthorizationError
 from llm_backend import llm_runtime_description, run_llm, write_json_atomic
+from markdown_safety import markdown_literal
 from runtime_status import RuntimeStatusWriter, runtime_timestamp
 from speaker_naming import build_anonymous_speaker_map
 from meetingbot_config import (
     ASR_MODEL,
+    AUDIO_MAX_DECODED_MB,
+    AUDIO_MAX_DURATION_SECONDS,
+    AUDIO_STAGE_TIMEOUT_SECONDS,
     DIARIZATION_MODEL,
     DOWNLOAD_DIR,
     FEISHU_APP_ID,
@@ -30,11 +34,14 @@ from meetingbot_config import (
     FFMPEG_BIN,
     HF_TOKEN,
     DOWNLOAD_MAX_MB,
+    DOWNLOAD_RETENTION_HOURS,
+    DOWNLOAD_TOTAL_MAX_MB,
     RUNTIME_DIR,
     RUNTIME_EVENTS_DIR,
     RUNTIME_STATUS_FILE,
     SCHEMA_DIR,
     TASK_MAX_PENDING,
+    TASK_MAX_PENDING_PER_PRINCIPAL,
     TASK_MAX_WORKERS,
     get_allowed_templates,
     get_template_descriptions,
@@ -56,6 +63,7 @@ from session_store import (
     is_audio_material_file,
     is_text_material_file,
     read_text_file,
+    session_scope_digest,
     set_latest_session,
     transcript_text_sha256,
     write_session_metadata,
@@ -77,6 +85,7 @@ MESSAGE_DEDUPLICATOR = PersistentMessageDeduplicator(
 MESSAGE_TASKS = BoundedTaskExecutor(
     max_workers=TASK_MAX_WORKERS,
     max_pending=TASK_MAX_PENDING,
+    max_pending_per_principal=TASK_MAX_PENDING_PER_PRINCIPAL,
 )
 RUNTIME_STATUS = RuntimeStatusWriter(
     runtime_dir=RUNTIME_DIR,
@@ -106,6 +115,8 @@ FEISHU_IO = FeishuIO(
     app_secret=FEISHU_APP_SECRET,
     download_dir=DOWNLOAD_DIR,
     download_max_mb=DOWNLOAD_MAX_MB,
+    download_total_max_mb=DOWNLOAD_TOTAL_MAX_MB,
+    retention_hours=DOWNLOAD_RETENTION_HOURS,
     client=feishu_client,
 )
 AUDIO_PIPELINE = AudioPipeline(
@@ -114,6 +125,9 @@ AUDIO_PIPELINE = AudioPipeline(
     hf_token=HF_TOKEN,
     ffmpeg_bin=FFMPEG_BIN,
     status_callback=write_session_runtime_status,
+    max_duration_seconds=AUDIO_MAX_DURATION_SECONDS,
+    max_decoded_mb=AUDIO_MAX_DECODED_MB,
+    stage_timeout_seconds=AUDIO_STAGE_TIMEOUT_SECONDS,
 )
 
 reply_text = FEISHU_IO.reply_text
@@ -301,13 +315,13 @@ def render_transcript_markdown(
     title: str,
 ) -> str:
     readable_segments = merge_adjacent_same_speaker(merged_segments)
-    lines = [f"# {title}", ""]
+    lines = [f"# {markdown_literal(title)}", ""]
 
     for seg in readable_segments:
         speaker_label = speaker_map.get(seg["speaker"], seg["speaker"])
         ts = format_timestamp(seg["start"])
-        lines.append(f"[{ts}] {speaker_label}：")
-        lines.append(seg["text"])
+        lines.append(f"\\[{ts}\\] {markdown_literal(speaker_label)}：")
+        lines.append(markdown_literal(seg["text"]))
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -873,8 +887,12 @@ def parse_follow_up_export_request(text: str) -> set[str]:
     return formats
 
 
-def append_requested_report_exports(message_id: str, requested_formats: set[str]) -> None:
-    session_path = get_latest_session()
+def append_requested_report_exports(
+    message_id: str,
+    requested_formats: set[str],
+    session_scope: Optional[str] = None,
+) -> None:
+    session_path = get_latest_session(session_scope=session_scope)
     if session_path is None:
         reply_text(message_id, "当前没有可追加导出的最近一次会议。")
         return
@@ -1079,18 +1097,24 @@ def process_text_transcript_material(
     text: str,
     source_name: str = "transcript.txt",
     reuse_if_available: bool = True,
+    session_scope: Optional[str] = None,
 ) -> None:
     session_path: Optional[Path] = None
+    downloaded_audio: Optional[Path] = None
     try:
         normalized = normalize_uploaded_transcript_text(text, title=Path(source_name).stem or "上传的转录文字材料")
         source_hash = transcript_text_sha256(text)
 
         if reuse_if_available:
-            reusable = find_reusable_session(source_hash, "transcript_text")
+            reusable = find_reusable_session(
+                source_hash,
+                "transcript_text",
+                session_scope=session_scope,
+            )
             if reusable is not None:
                 transcript_anon = (reusable / "transcript_anon.md").read_text(encoding="utf-8")
                 speaker_map = load_speaker_map(reusable) if (reusable / "speaker_map.json").exists() else {}
-                set_latest_session(reusable)
+                set_latest_session(reusable, session_scope=session_scope)
                 write_session_runtime_status(
                     task_status="processing",
                     stage="reusing_transcript",
@@ -1107,7 +1131,7 @@ def process_text_transcript_material(
                 )
                 return
 
-        session_path = create_text_session(source_name)
+        session_path = create_text_session(source_name, session_scope=session_scope)
         write_session_metadata(
             session_path,
             {
@@ -1115,6 +1139,7 @@ def process_text_transcript_material(
                 "source_name": source_name,
                 "source_sha256": source_hash,
                 "created_at": runtime_timestamp(),
+                "session_scope_sha256": session_scope_digest(session_scope),
             },
         )
         (session_path / "uploaded_transcript.txt").write_text(text.strip(), encoding="utf-8")
@@ -1142,16 +1167,16 @@ def process_text_transcript_material(
             session_path=session_path,
         )
         reply_text(message_id, error_msg)
-
-
 def process_audio_message(
     message_id: str,
     message_type: str,
     content: Dict,
     command_text: str = "",
     resource_message_id: Optional[str] = None,
+    session_scope: Optional[str] = None,
 ) -> None:
     session_path: Optional[Path] = None
+    downloaded_audio: Optional[Path] = None
     try:
         file_key = content.get("file_key")
         file_name = (
@@ -1201,6 +1226,7 @@ def process_audio_message(
                 text=text,
                 source_name=file_name,
                 reuse_if_available=True,
+                session_scope=session_scope,
             )
             return
 
@@ -1213,11 +1239,15 @@ def process_audio_message(
 
         audio_hash = file_sha256(downloaded_audio)
         if not force_retranscribe:
-            reusable = find_reusable_session(audio_hash, "audio")
+            reusable = find_reusable_session(
+                audio_hash,
+                "audio",
+                session_scope=session_scope,
+            )
             if reusable is not None:
                 transcript_anon = (reusable / "transcript_anon.md").read_text(encoding="utf-8")
                 speaker_map = load_speaker_map(reusable)
-                set_latest_session(reusable)
+                set_latest_session(reusable, session_scope=session_scope)
                 write_session_runtime_status(
                     task_status="processing",
                     stage="reusing_transcript",
@@ -1234,7 +1264,7 @@ def process_audio_message(
                 )
                 return
 
-        session_path = create_session(downloaded_audio)
+        session_path = create_session(downloaded_audio, session_scope=session_scope)
         session_audio = session_path / downloaded_audio.name
         write_session_metadata(
             session_path,
@@ -1243,6 +1273,7 @@ def process_audio_message(
                 "source_name": file_name,
                 "source_sha256": audio_hash,
                 "created_at": runtime_timestamp(),
+                "session_scope_sha256": session_scope_digest(session_scope),
             },
         )
 
@@ -1321,6 +1352,8 @@ def process_audio_message(
             session_path=session_path,
         )
         reply_text(message_id, error_msg)
+    finally:
+        FEISHU_IO.cleanup_download(downloaded_audio)
 
 
 # ============================================================
@@ -1362,10 +1395,14 @@ def apply_speaker_mapping_updates(
     return speaker_map, changed
 
 
-def regenerate_named_outputs(message_id: str, updates: Dict[str, str]) -> None:
+def regenerate_named_outputs(
+    message_id: str,
+    updates: Dict[str, str],
+    session_scope: Optional[str] = None,
+) -> None:
     session_path: Optional[Path] = None
     try:
-        session_path = get_latest_session()
+        session_path = get_latest_session(session_scope=session_scope)
         if session_path is None:
             reply_text(message_id, "当前没有可更新的最近一次录音任务。")
             return
@@ -1454,8 +1491,11 @@ def regenerate_named_outputs(message_id: str, updates: Dict[str, str]) -> None:
 # 23. 查看当前说话人映射
 # ============================================================
 
-def show_current_speaker_mapping(message_id: str) -> None:
-    session_path = get_latest_session()
+def show_current_speaker_mapping(
+    message_id: str,
+    session_scope: Optional[str] = None,
+) -> None:
+    session_path = get_latest_session(session_scope=session_scope)
     if session_path is None:
         reply_text(message_id, "当前没有最近一次录音任务。")
         return
@@ -1473,7 +1513,13 @@ def show_current_speaker_mapping(message_id: str) -> None:
 # 24. 文本消息处理
 # ============================================================
 
-def handle_text_message(message_id: str, text: str, content: Optional[Dict] = None, message_obj=None) -> None:
+def handle_text_message(
+    message_id: str,
+    text: str,
+    content: Optional[Dict] = None,
+    message_obj=None,
+    session_scope: Optional[str] = None,
+) -> None:
     text = text.strip()
     content = content or {}
 
@@ -1481,8 +1527,24 @@ def handle_text_message(message_id: str, text: str, content: Optional[Dict] = No
         reply_text(message_id, "收到空文本。")
         return
 
-    referenced_payload = get_referenced_message_payload(content, message_obj)
-    if referenced_payload and (is_regenerate_report_request(text) or is_force_retranscribe(text)):
+    reference_request = is_regenerate_report_request(text) or is_force_retranscribe(text)
+    referenced_payload = None
+    if reference_request:
+        current_chat_id = str(getattr(message_obj, "chat_id", "") or "").strip()
+        try:
+            referenced_payload = get_referenced_message_payload(
+                content,
+                message_obj,
+                expected_chat_id=current_chat_id,
+            )
+        except ReferencedMessageAuthorizationError:
+            reply_text(
+                message_id,
+                "无法读取引用内容，请确认引用消息位于当前会话后重试。",
+            )
+            return
+
+    if referenced_payload and reference_request:
         ref_type = referenced_payload.get("message_type", "")
         ref_content = referenced_payload.get("content", {})
         ref_message_id = referenced_payload.get("message_id", "")
@@ -1498,6 +1560,7 @@ def handle_text_message(message_id: str, text: str, content: Optional[Dict] = No
                 content=ref_content,
                 command_text=text,
                 resource_message_id=ref_message_id,
+                session_scope=session_scope,
             )
             return
 
@@ -1510,6 +1573,7 @@ def handle_text_message(message_id: str, text: str, content: Optional[Dict] = No
                     text=quoted_text,
                     source_name="quoted_transcript.txt",
                     reuse_if_available=True,
+                    session_scope=session_scope,
                 )
                 return
 
@@ -1554,21 +1618,35 @@ def handle_text_message(message_id: str, text: str, content: Optional[Dict] = No
         return
 
     if text == "查看说话人":
-        show_current_speaker_mapping(message_id)
+        show_current_speaker_mapping(message_id, session_scope=session_scope)
         return
 
     requested_exports = parse_follow_up_export_request(text)
     if requested_exports:
-        append_requested_report_exports(message_id, requested_exports)
+        append_requested_report_exports(
+            message_id,
+            requested_exports,
+            session_scope=session_scope,
+        )
         return
 
     speaker_updates = parse_speaker_mapping_update(text)
     if speaker_updates:
-        regenerate_named_outputs(message_id, speaker_updates)
+        regenerate_named_outputs(
+            message_id,
+            speaker_updates,
+            session_scope=session_scope,
+        )
         return
 
     if looks_like_transcript_text(text):
-        process_text_transcript_material(message_id, text, "pasted_transcript.txt", True)
+        process_text_transcript_material(
+            message_id,
+            text,
+            "pasted_transcript.txt",
+            True,
+            session_scope=session_scope,
+        )
         return
 
     reply_text(
@@ -1581,11 +1659,27 @@ def handle_text_message(message_id: str, text: str, content: Optional[Dict] = No
 # 25. 飞书事件入口
 # ============================================================
 
+def feishu_session_scope(data: P2ImMessageReceiveV1) -> str:
+    message = data.event.message
+    chat_id = str(getattr(message, "chat_id", "") or "").strip()
+    if chat_id:
+        return f"feishu:chat:{chat_id}"
+
+    sender = getattr(data.event, "sender", None)
+    sender_id = getattr(sender, "sender_id", None)
+    for attribute in ("open_id", "user_id", "union_id"):
+        value = str(getattr(sender_id, attribute, "") or "").strip()
+        if value:
+            return f"feishu:sender:{attribute}:{value}"
+
+    return f"feishu:message:{message.message_id}"
+
 def on_message_receive(data: P2ImMessageReceiveV1) -> None:
     try:
         message = data.event.message
         message_id = message.message_id
         message_type = message.message_type
+        session_scope = feishu_session_scope(data)
 
         if not MESSAGE_DEDUPLICATOR.claim(message_id):
             print(f"[Dedup] 跳过重复消息：{message_id}")
@@ -1598,14 +1692,33 @@ def on_message_receive(data: P2ImMessageReceiveV1) -> None:
 
         if message_type == "text":
             text = content.get("text", "")
-            accepted = MESSAGE_TASKS.submit(handle_text_message, message_id, text, content, message)
+            accepted = MESSAGE_TASKS.submit(
+                handle_text_message,
+                message_id,
+                text,
+                content,
+                message,
+                session_scope,
+                principal=session_scope,
+            )
             if not accepted:
-                reply_text(message_id, "当前待处理任务较多，请稍后重新发送。")
+                MESSAGE_DEDUPLICATOR.release(message_id)
+                reply_text(message_id, "当前会话待处理任务较多，请稍后重新发送。")
 
         elif message_type in {"audio", "file"}:
-            accepted = MESSAGE_TASKS.submit(process_audio_message, message_id, message_type, content)
+            accepted = MESSAGE_TASKS.submit(
+                process_audio_message,
+                message_id,
+                message_type,
+                content,
+                "",
+                None,
+                session_scope,
+                principal=session_scope,
+            )
             if not accepted:
-                reply_text(message_id, "当前待处理任务较多，请稍后重新发送。")
+                MESSAGE_DEDUPLICATOR.release(message_id)
+                reply_text(message_id, "当前会话待处理任务较多，请稍后重新发送。")
 
         else:
             reply_text(

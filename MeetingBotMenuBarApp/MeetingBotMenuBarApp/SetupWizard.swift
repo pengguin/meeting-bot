@@ -419,14 +419,22 @@ final class SetupWizardStore: ObservableObject {
                 let launch = launchCommand(for: binary)
                 process.executableURL = launch.executableURL
                 process.arguments = launch.arguments
-                process.environment = Self.processEnvironmentWithToolPaths()
+                process.environment = ToolDiscovery.environmentWithToolPaths()
                 let pipe = Pipe()
                 process.standardOutput = pipe
                 process.standardError = pipe
 
                 do {
                     try process.run()
-                    process.waitUntilExit()
+                    let deadline = Date().addingTimeInterval(10)
+                    while process.isRunning && Date() < deadline {
+                        Thread.sleep(forTimeInterval: 0.05)
+                    }
+                    if process.isRunning {
+                        process.terminate()
+                        continuation.resume(returning: .failed("Codex CLI 登录检查超时"))
+                        return
+                    }
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: data, encoding: .utf8)?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -442,28 +450,10 @@ final class SetupWizardStore: ObservableObject {
         }
     }
 
-    private nonisolated static func processEnvironmentWithToolPaths() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        let toolDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
-        let existing = environment["PATH"]?.split(separator: ":").map(String.init) ?? []
-        var combined = toolDirectories
-        for path in existing where !combined.contains(path) {
-            combined.append(path)
-        }
-        environment["PATH"] = combined.joined(separator: ":")
-        return environment
-    }
-
     private nonisolated static func launchCommand(for binary: String) -> (executableURL: URL, arguments: [String]) {
-        if binary.contains("/") {
-            return (URL(fileURLWithPath: binary), ["login", "status"])
-        }
-
-        for directory in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
-            let candidate = "\(directory)/\(binary)"
-            if FileManager.default.isExecutableFile(atPath: candidate) {
-                return (URL(fileURLWithPath: candidate), ["login", "status"])
-            }
+        if let resolved = ToolDiscovery.resolveExecutable(binary)
+            ?? ToolDiscovery.resolveExecutable("codex") {
+            return (URL(fileURLWithPath: resolved), ["login", "status"])
         }
 
         return (URL(fileURLWithPath: "/usr/bin/env"), [binary, "login", "status"])

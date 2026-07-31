@@ -3,6 +3,9 @@ import re
 from pathlib import Path
 from typing import Dict, List
 
+from markdown_safety import markdown_literal
+from meetingbot_config import TRANSCRIPT_MAX_CHARACTERS, TRANSCRIPT_MAX_SEGMENTS
+
 RESERVED_METADATA_LABELS = {
     "生成时间",
     "报告版本",
@@ -18,17 +21,20 @@ def normalize_uploaded_transcript_text(text: str, title: str = "上传的转录�
     if not cleaned:
         raise RuntimeError("转录文字材料为空")
 
-    if cleaned.lstrip().startswith("#"):
-        return cleaned
-
-    return f"# {title}\n\n{cleaned}"
+    if len(cleaned) > TRANSCRIPT_MAX_CHARACTERS:
+        raise RuntimeError(f"转录文字材料字符数超过上限（{TRANSCRIPT_MAX_CHARACTERS} 字符）")
+    return f"# {markdown_literal(title)}\n\n{markdown_literal(cleaned)}"
 
 
 def create_text_segments_from_transcript(text: str, session_path: Path) -> List[Dict]:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
     segments: List[Dict] = []
 
-    for idx, line in enumerate(lines):
+    for idx, raw_line in enumerate(text.splitlines()):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if len(segments) >= TRANSCRIPT_MAX_SEGMENTS:
+            raise RuntimeError(f"转录文字材料段落数超过上限（{TRANSCRIPT_MAX_SEGMENTS} 段）")
         speaker = "TEXT"
         body = line
 

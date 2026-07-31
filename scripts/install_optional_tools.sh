@@ -74,12 +74,32 @@ find_executable() {
     return
   fi
 
-  for candidate in "/opt/homebrew/bin/$name" "/usr/local/bin/$name"; do
+  for candidate in \
+    "$HOME/.local/bin/$name" \
+    "$HOME/bin/$name" \
+    "$HOME/.volta/bin/$name" \
+    "$HOME/.bun/bin/$name" \
+    "$HOME/Library/pnpm/$name" \
+    "/opt/homebrew/bin/$name" \
+    "/usr/local/bin/$name"; do
     [[ -x "$candidate" ]] && {
       printf '%s\n' "$candidate"
       return
     }
   done
+
+  for candidate in \
+    "$HOME"/.nvm/versions/node/*/bin/"$name" \
+    "$HOME"/.npm/_npx/*/node_modules/.bin/"$name"; do
+    [[ -x "$candidate" ]] && {
+      printf '%s\n' "$candidate"
+      return
+    }
+  done
+
+  if [[ -x "/bin/zsh" ]]; then
+    /bin/zsh -lic "command -v '$name' 2>/dev/null || true" 2>/dev/null || true
+  fi
 }
 
 ensure_homebrew() {
@@ -108,7 +128,8 @@ install_ffmpeg() {
 install_libreoffice() {
   local brew="$1"
   if [[ -n "$(find_executable soffice || true)" ]] ||
-    [[ -x "/Applications/LibreOffice.app/Contents/MacOS/soffice" ]]; then
+    [[ -x "/Applications/LibreOffice.app/Contents/MacOS/soffice" ]] ||
+    [[ -x "$HOME/Applications/LibreOffice.app/Contents/MacOS/soffice" ]]; then
     info "LibreOffice 已存在"
     return
   fi
@@ -126,6 +147,10 @@ install_codex() {
 
   npm="$(find_executable npm || true)"
   if [[ -z "$npm" ]]; then
+    [[ -n "$brew" ]] || {
+      warn "未找到 npm；安装 Node.js 需要 Homebrew"
+      exit 2
+    }
     info "安装 Node.js"
     "$brew" install node
     npm="$(find_executable npm || true)"
@@ -141,13 +166,21 @@ install_codex() {
 }
 
 main() {
+  local npm
   parse_args "$@"
   if [[ "$INSTALL_FFMPEG" -eq 0 && "$INSTALL_LIBREOFFICE" -eq 0 && "$INSTALL_CODEX" -eq 0 ]]; then
     warn "未指定需要安装的工具"
     exit 1
   fi
 
-  ensure_homebrew
+  if [[ "$INSTALL_FFMPEG" -eq 1 || "$INSTALL_LIBREOFFICE" -eq 1 ]]; then
+    ensure_homebrew
+  fi
+  if [[ "$INSTALL_CODEX" -eq 1 ]] &&
+    [[ -z "$(find_executable codex || true)" ]]; then
+    npm="$(find_executable npm || true)"
+    [[ -n "$npm" ]] || ensure_homebrew
+  fi
 
   [[ "$INSTALL_FFMPEG" -eq 1 ]] && install_ffmpeg "$BREW_BIN"
   [[ "$INSTALL_LIBREOFFICE" -eq 1 ]] && install_libreoffice "$BREW_BIN"

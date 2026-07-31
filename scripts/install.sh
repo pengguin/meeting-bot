@@ -8,6 +8,9 @@ PROJECT_NAME="meeting-bot"
 SOURCE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEFAULT_INSTALL_DIR="$HOME/Library/Application Support/$PROJECT_NAME"
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+INSTALL_OWNERSHIP_MARKER=".meetingbot-install-root"
+INSTALL_OWNERSHIP_VALUE="meeting-bot-exclusive-v1"
+INSTALL_ROOT_EXCLUSIVE=0
 LOG_DIR="${MEETINGBOT_LOG_DIR:-$HOME/Library/Logs/$PROJECT_NAME}"
 LEGACY_MIGRATION_MARKER_RELATIVE="runtime/legacy_migration_completed.txt"
 LEGACY_INSTALL_DIRS=(
@@ -36,18 +39,34 @@ VERIFY_PAYLOAD_ONLY=0
 
 verify_payload_manifest() {
   local marker manifest checksum_file expected_checksum actual_checksum signature public_key
+  local trust_mode manifest_mode embedded_key invalid_entry
   marker="$SOURCE_ROOT/.meetingbot-packaged-payload"
   manifest="$SOURCE_ROOT/release-manifest.json"
   checksum_file="$SOURCE_ROOT/payload-files.sha256"
   signature="$SOURCE_ROOT/release-manifest.sig"
-  public_key="$SOURCE_ROOT/release-public-key.pem"
+  public_key="${MEETINGBOT_RELEASE_PUBLIC_KEY_PATH:-}"
+  trust_mode="${MEETINGBOT_PAYLOAD_TRUST_MODE:-development}"
+  embedded_key="$SOURCE_ROOT/release-public-key.pem"
 
   [[ -f "$marker" ]] || {
     info "源代码安装：未启用打包载荷校验"
     return 0
   }
+  [[ "$trust_mode" == "development" || "$trust_mode" == "distribution" ]] || {
+    printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=invalid_trust_mode\n' >&2
+    return 1
+  }
   [[ -f "$manifest" && -f "$checksum_file" ]] || {
     printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=missing_manifest\n' >&2
+    return 1
+  }
+  [[ ! -e "$embedded_key" ]] || {
+    printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=embedded_trust_anchor\n' >&2
+    return 1
+  }
+  manifest_mode="$(sed -nE 's/.*"security_mode": "(development|distribution)".*/\1/p' "$manifest" | head -1)"
+  [[ "$manifest_mode" == "$trust_mode" ]] || {
+    printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=security_mode_mismatch\n' >&2
     return 1
   }
   expected_checksum="$(sed -nE 's/.*"checksum_file_sha256": "([0-9a-f]{64})".*/\1/p' "$manifest" | head -1)"
@@ -62,8 +81,41 @@ verify_payload_manifest() {
     return 1
   fi
 
-  if [[ -f "$signature" || -f "$public_key" ]]; then
-    [[ -f "$signature" && -f "$public_key" ]] || {
+  invalid_entry="$(find "$SOURCE_ROOT" -mindepth 1 ! -type f ! -type d -print -quit 2>/dev/null || true)"
+  [[ -z "$invalid_entry" ]] || {
+    printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=unsupported_file_type\n' >&2
+    return 1
+  }
+  if ! diff -u \
+    <(
+      awk '
+        /^[0-9a-f]{64}  / {
+          path = substr($0, 67)
+          if (path == "" || path ~ /^\// || path ~ /(^|\/)\.\.(\/|$)/ || path ~ /\\/) {
+            exit 2
+          }
+          print path
+          next
+        }
+        { exit 2 }
+      ' "$checksum_file" | LC_ALL=C sort
+    ) \
+    <(
+      cd "$SOURCE_ROOT"
+      find . -type f \
+        ! -path "./release-manifest.json" \
+        ! -path "./payload-files.sha256" \
+        ! -path "./release-manifest.sig" \
+        -print |
+        sed 's#^\./##' |
+        LC_ALL=C sort
+    ) >/dev/null; then
+    printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=file_set_mismatch\n' >&2
+    return 1
+  fi
+
+  if [[ "$trust_mode" == "distribution" || -f "$signature" || -n "$public_key" ]]; then
+    [[ -f "$signature" && -n "$public_key" && -f "$public_key" ]] || {
       printf '[install][error] code=PAYLOAD_INTEGRITY_FAILED reason=incomplete_signature\n' >&2
       return 1
     }
@@ -74,7 +126,7 @@ verify_payload_manifest() {
     fi
     info "安装载荷签名与文件完整性校验通过"
   else
-    info "安装载荷文件完整性校验通过（未附加独立发布签名）"
+    info "开发构建载荷文件完整性校验通过（未附加发布签名）"
   fi
 }
 
@@ -336,7 +388,9 @@ resolve_tool_path() {
       printf '%s\n' "$configured_path"
       return
     fi
-    command_name="$configured_path"
+    if [[ "$configured_path" != */* ]]; then
+      command_name="$configured_path"
+    fi
   fi
 
   if command -v "$command_name" >/dev/null 2>&1; then
@@ -344,7 +398,23 @@ resolve_tool_path() {
     return
   fi
 
-  for candidate in "/opt/homebrew/bin/$command_name" "/usr/local/bin/$command_name"; do
+  for candidate in \
+    "$HOME/.local/bin/$command_name" \
+    "$HOME/bin/$command_name" \
+    "$HOME/.volta/bin/$command_name" \
+    "$HOME/.bun/bin/$command_name" \
+    "$HOME/Library/pnpm/$command_name" \
+    "/opt/homebrew/bin/$command_name" \
+    "/usr/local/bin/$command_name"; do
+    [[ -x "$candidate" ]] && {
+      printf '%s\n' "$candidate"
+      return
+    }
+  done
+
+  for candidate in \
+    "$HOME"/.nvm/versions/node/*/bin/"$command_name" \
+    "$HOME"/.npm/_npx/*/node_modules/.bin/"$command_name"; do
     [[ -x "$candidate" ]] && {
       printf '%s\n' "$candidate"
       return
@@ -385,6 +455,29 @@ copy_project() {
     --exclude "tmp" \
     --exclude "backups" \
     "$SOURCE_ROOT/" "$INSTALL_DIR/"
+}
+
+detect_install_root_ownership() {
+  if [[ "$INSTALL_DIR" == "$DEFAULT_INSTALL_DIR" ]]; then
+    INSTALL_ROOT_EXCLUSIVE=1
+    return
+  fi
+  if [[ "$SOURCE_ROOT" == "$INSTALL_DIR" ]]; then
+    INSTALL_ROOT_EXCLUSIVE=0
+    return
+  fi
+  if [[ -f "$INSTALL_DIR/$INSTALL_OWNERSHIP_MARKER" ]] &&
+     grep -qxF "$INSTALL_OWNERSHIP_VALUE" "$INSTALL_DIR/$INSTALL_OWNERSHIP_MARKER"; then
+    INSTALL_ROOT_EXCLUSIVE=1
+    return
+  fi
+  if [[ ! -e "$INSTALL_DIR" ]]; then
+    INSTALL_ROOT_EXCLUSIVE=1
+    return
+  fi
+  if [[ -d "$INSTALL_DIR" ]] && [[ -z "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+    INSTALL_ROOT_EXCLUSIVE=1
+  fi
 }
 
 migrate_legacy_install_if_needed() {
@@ -762,6 +855,15 @@ prepare_runtime_dirs() {
     "$INSTALL_DIR/tmp"
 }
 
+mark_install_root_owned() {
+  if [[ "$INSTALL_ROOT_EXCLUSIVE" -ne 1 ]]; then
+    warn "安装目录原本包含其他内容，不标记为应用专用目录；卸载时将保留该目录。"
+    return
+  fi
+  printf '%s\n' "$INSTALL_OWNERSHIP_VALUE" > "$INSTALL_DIR/$INSTALL_OWNERSHIP_MARKER"
+  chmod 600 "$INSTALL_DIR/$INSTALL_OWNERSHIP_MARKER"
+}
+
 resolve_storage_dir() {
   local raw_value="$1"
   local default_value="$2"
@@ -783,7 +885,8 @@ build_or_install_app() {
     info "已跳过菜单栏 App 构建"
   elif command -v xcrun >/dev/null 2>&1; then
     info "构建菜单栏 App"
-    bash MeetingBotMenuBarApp/build_release_app.sh
+    MEETINGBOT_BUILD_SECURITY_MODE="${MEETINGBOT_BUILD_SECURITY_MODE:-development}" \
+      bash MeetingBotMenuBarApp/build_release_app.sh
   elif [[ ! -d "$APP_SOURCE" ]]; then
     warn "未找到 xcrun，且发行包中没有 ${APP_SOURCE}，菜单栏 App 暂不能安装。"
     return
@@ -908,7 +1011,11 @@ print_checks() {
     ALLOW_MANAGED_PYTHON_INSTALL="$allow_managed_python_install" \
     bash "$SOURCE_ROOT/scripts/preflight.sh" || exit 1
   require_command ffmpeg "请安装 ffmpeg，例如：brew install ffmpeg。" "$(read_env_value FFMPEG_BIN)" || true
-  require_command soffice "请安装 LibreOffice，用于 DOCX 转 PDF。" || true
+  if [[ -z "$(resolve_tool_path soffice "" || true)" ]] &&
+    [[ ! -x "/Applications/LibreOffice.app/Contents/MacOS/soffice" ]] &&
+    [[ ! -x "$HOME/Applications/LibreOffice.app/Contents/MacOS/soffice" ]]; then
+    warn "未找到 LibreOffice：请安装 LibreOffice，用于 DOCX 转 PDF。"
+  fi
   check_llm_backend || true
 }
 
@@ -918,6 +1025,7 @@ main() {
   fi
 
   parse_args "$@"
+  detect_install_root_ownership
 
   LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
   PLIST_PATH="$LAUNCH_AGENTS_DIR/$SERVICE_LABEL.plist"
@@ -954,6 +1062,7 @@ main() {
   write_launch_agent
   CURRENT_STEP="启动后台服务"
   load_launch_agent
+  mark_install_root_owned
   INSTALL_SUCCEEDED=1
   cleanup_upgrade_backups
 
@@ -964,4 +1073,6 @@ main() {
   info "4. 打开 ${APP_INSTALL_PATH}，或直接运行 ${INSTALL_DIR}/dist/${APP_NAME}.app。"
 }
 
-main "$@"
+if [[ "${MEETINGBOT_INSTALL_LIBRARY_ONLY:-0}" != "1" ]]; then
+  main "$@"
+fi

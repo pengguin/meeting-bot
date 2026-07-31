@@ -23,6 +23,7 @@ from local_meeting_drafts import (
     write_local_meeting_checkpoint,
     write_local_meeting_state,
 )
+from markdown_safety import markdown_literal
 from meetingbot_config import RUNTIME_DIR
 from speaker_naming import anonymous_speaker_label
 
@@ -40,7 +41,7 @@ def render_transcript_markdown(
     speaker_map: dict[str, str],
     title: str,
 ) -> str:
-    lines = [f"# {title}", ""]
+    lines = [f"# {markdown_literal(title)}", ""]
     for segment in segments:
         start = format_timestamp(float(segment.get("start", 0)))
         end = format_timestamp(float(segment.get("end", 0)))
@@ -49,7 +50,10 @@ def render_transcript_markdown(
         text = str(segment.get("text", "")).strip()
         if not text:
             continue
-        lines.append(f"- [{start} - {end}] {speaker}：{text}")
+        lines.append(
+            f"- \\[{start} \\- {end}\\] "
+            f"{markdown_literal(speaker)}：{markdown_literal(text)}"
+        )
     return "\n".join(lines).strip()
 
 

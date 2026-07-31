@@ -141,10 +141,31 @@ final class BootstrapInstallerStore: ObservableObject {
         guard !isRunning else {
             return
         }
-        guard let payloadRoot = Bundle.main.resourceURL?
-            .appendingPathComponent("bootstrap/meeting-bot", isDirectory: true),
+        guard let resourceRoot = Bundle.main.resourceURL else {
+            errorMessage = "应用包中缺少资源目录。请重新下载应用。"
+            completion(false)
+            return
+        }
+        let payloadRoot = resourceRoot
+            .appendingPathComponent("bootstrap/meeting-bot", isDirectory: true)
+        guard
               AppPaths.exists(payloadRoot.appendingPathComponent("scripts/install.sh")) else {
             errorMessage = "应用包中缺少本地组件载荷。请重新下载应用。"
+            completion(false)
+            return
+        }
+        let securityMode = Bundle.main.object(
+            forInfoDictionaryKey: "MeetingBotBuildSecurityMode"
+        ) as? String ?? ""
+        do {
+            try PayloadVerifier.verify(
+                payloadRoot: payloadRoot,
+                resourceRoot: resourceRoot,
+                securityMode: securityMode
+            )
+        } catch {
+            statusText = "安装载荷验证失败"
+            errorMessage = error.localizedDescription
             completion(false)
             return
         }
@@ -180,6 +201,13 @@ final class BootstrapInstallerStore: ObservableObject {
         }
         process.arguments = arguments
         process.currentDirectoryURL = payloadRoot
+        var processEnvironment = ProcessInfo.processInfo.environment
+        processEnvironment["MEETINGBOT_PAYLOAD_TRUST_MODE"] = securityMode
+        let publicKeyURL = resourceRoot.appendingPathComponent("release-public-key.pem")
+        if AppPaths.exists(publicKeyURL) {
+            processEnvironment["MEETINGBOT_RELEASE_PUBLIC_KEY_PATH"] = publicKeyURL.path
+        }
+        process.environment = processEnvironment
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -686,7 +714,7 @@ struct BootstrapInstallWindowView: View {
                                     .progressViewStyle(.linear)
                             }
 
-                            Text("会使用已安装的 Homebrew 补齐 ffmpeg、LibreOffice 和 Codex CLI。为避免未经确认执行网络脚本，Homebrew 本身需由你从官网安装；Codex CLI 安装后仍需登录。")
+                            Text("ffmpeg 和 LibreOffice 会使用已安装的 Homebrew 补齐；Codex CLI 优先使用现有 npm 安装，仅在缺少 Node.js 时才需要 Homebrew。为避免未经确认执行网络脚本，Homebrew 本身需由你从官网安装；Codex CLI 安装后仍需登录。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
 

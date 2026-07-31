@@ -14,6 +14,15 @@ class TranscriptMaterialTests(unittest.TestCase):
         normalized = normalize_uploaded_transcript_text("张三：开始")
         self.assertTrue(normalized.startswith("# 上传的转录文字材料"))
 
+    def test_normalize_uploaded_text_escapes_active_markdown(self) -> None:
+        normalized = normalize_uploaded_transcript_text(
+            "# heading\n![track](https://example.test/pixel)\n<script>alert(1)</script>"
+        )
+
+        self.assertIn(r"\# heading", normalized)
+        self.assertIn(r"\!\[track\]\(https://example\.test/pixel\)", normalized)
+        self.assertIn(r"\<script\>alert\(1\)\</script\>", normalized)
+
     def test_create_text_segments_extracts_speakers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             session = Path(tmpdir)

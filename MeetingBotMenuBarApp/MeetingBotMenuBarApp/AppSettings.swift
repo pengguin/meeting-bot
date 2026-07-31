@@ -253,6 +253,11 @@ final class RuntimeConfigStore: ObservableObject {
         let destination: URL
     }
 
+    private struct StoragePlan {
+        let moves: [StorageMove]
+        let preservedCustomSources: [URL]
+    }
+
     @Published var feishuAppID = ""
     @Published var feishuAppSecret = ""
     @Published var hfToken = ""
@@ -332,12 +337,20 @@ final class RuntimeConfigStore: ObservableObject {
             defaultURL: AppPaths.defaultMeetingOutputsDirectory
         )
 
-        let plannedStorageMoves: [StorageMove]
+        let storagePlan: StoragePlan
         do {
-            plannedStorageMoves = try storageMoves(
+            storagePlan = try makeStoragePlan(
                 pairs: [
-                    (currentRecordingsDirectory, nextRecordingsDirectory),
-                    (currentMeetingOutputsDirectory, nextMeetingOutputsDirectory),
+                    (
+                        currentRecordingsDirectory,
+                        nextRecordingsDirectory,
+                        AppPaths.defaultRecordingsDirectory
+                    ),
+                    (
+                        currentMeetingOutputsDirectory,
+                        nextMeetingOutputsDirectory,
+                        AppPaths.defaultMeetingOutputsDirectory
+                    ),
                 ]
             )
         } catch {
@@ -400,8 +413,13 @@ final class RuntimeConfigStore: ObservableObject {
                 [.posixPermissions: 0o600],
                 ofItemAtPath: AppPaths.envFile.path
             )
-            try executeStorageMoves(plannedStorageMoves)
-            lastSaveMessage = "配置已保存，敏感凭据已写入系统钥匙串"
+            try executeStorageMoves(storagePlan.moves)
+            if storagePlan.preservedCustomSources.isEmpty {
+                lastSaveMessage = "配置已保存，敏感凭据已写入系统钥匙串"
+            } else {
+                let paths = storagePlan.preservedCustomSources.map(\.path).joined(separator: "；")
+                lastSaveMessage = "配置已保存。旧自定义目录已原地保留，请确认后手动迁移应用数据：\(paths)"
+            }
             return true
         } catch {
             try? SecureCredentialStore.replace(with: previousSecrets)
@@ -445,22 +463,45 @@ final class RuntimeConfigStore: ObservableObject {
         AppPaths.resolvedDirectory(path: rawValue, defaultURL: defaultURL).path
     }
 
-    private func storageMoves(pairs: [(URL, URL)]) throws -> [StorageMove] {
+    private func makeStoragePlan(pairs: [(URL, URL, URL)]) throws -> StoragePlan {
         let fileManager = FileManager.default
         var moves: [StorageMove] = []
+        var preservedCustomSources: [URL] = []
         var destinations = Set<String>()
         for pair in pairs {
             let source = pair.0.standardizedFileURL
             let destination = pair.1.standardizedFileURL
-            try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
-            guard source != destination, AppPaths.exists(source) else {
+            if source == destination {
+                try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
                 continue
             }
+            guard AppPaths.exists(source) else {
+                try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+                continue
+            }
+            let sourcePath = source.resolvingSymlinksInPath().standardizedFileURL.path
+            let destinationPath = destination.resolvingSymlinksInPath().standardizedFileURL.path
+            if sourcePath.hasPrefix(destinationPath + "/") || destinationPath.hasPrefix(sourcePath + "/") {
+                throw NSError(
+                    domain: "MeetingBotStorage",
+                    code: 3,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "新旧保存目录不能互相包含：\(source.path)"
+                    ]
+                )
+            }
+            try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
             let items = try fileManager.contentsOfDirectory(
                 at: source,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )
+            guard isAppManagedDefaultDirectory(source, defaultURL: pair.2) else {
+                if !items.isEmpty {
+                    preservedCustomSources.append(source)
+                }
+                continue
+            }
             for item in items {
                 let target = destination.appendingPathComponent(item.lastPathComponent)
                 guard !fileManager.fileExists(atPath: target.path),
@@ -477,7 +518,19 @@ final class RuntimeConfigStore: ObservableObject {
                 moves.append(StorageMove(source: item, destination: target))
             }
         }
-        return moves
+        return StoragePlan(
+            moves: moves,
+            preservedCustomSources: preservedCustomSources
+        )
+    }
+
+    private func isAppManagedDefaultDirectory(_ source: URL, defaultURL: URL) -> Bool {
+        let sourceIsSymbolicLink = (try? source.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true
+        guard !sourceIsSymbolicLink else {
+            return false
+        }
+        return source.resolvingSymlinksInPath().standardizedFileURL
+            == defaultURL.resolvingSymlinksInPath().standardizedFileURL
     }
 
     private func executeStorageMoves(_ moves: [StorageMove]) throws {
@@ -1050,7 +1103,7 @@ struct SettingsWindowView: View {
                                     title: "本地录音"
                                 )
                             } hint: {
-                                Text("默认：`\(AppPaths.defaultRecordingsDirectory.path)`。保存后会把现有录音缓存迁移到新目录。")
+                                Text("默认：`\(AppPaths.defaultRecordingsDirectory.path)`。默认目录中的录音缓存会迁移；旧自定义目录会原地保留。")
                             }
 
                             settingsField("会议纪要保存文件夹") {
@@ -1063,7 +1116,7 @@ struct SettingsWindowView: View {
                                 Text("默认：`\(AppPaths.defaultMeetingOutputsDirectory.path)`。该目录保存会议音频副本、转录稿和正式纪要。")
                             }
 
-                            Text("更改保存位置后，保存并重启服务即可让后台开始使用新目录。")
+                            Text("更改保存位置后，保存并重启服务即可使用新目录。为避免搬动共享文件，旧自定义目录中的数据需手动确认后迁移。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

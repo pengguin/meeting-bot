@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="会议纪要助手"
-VERSION="0.5.1"
+VERSION="0.5.2"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP_ROOT="$PROJECT_ROOT/dist/setup"
 DMG_STAGING="$SETUP_ROOT/dmg"
@@ -12,6 +12,11 @@ RW_DMG_PATH="$SETUP_ROOT/会议纪要助手 ${VERSION}.rw.dmg"
 MOUNT_POINT="/Volumes/会议纪要助手 ${VERSION}"
 DMG_RENDERER="$SETUP_ROOT/render_dmg_background"
 SWIFT_MODULE_CACHE_DIR="/private/tmp/meetingbot-setup-swift-module-cache"
+BUILD_SECURITY_MODE="${MEETINGBOT_BUILD_SECURITY_MODE:-distribution}"
+CODESIGN_IDENTITY="${MEETINGBOT_CODESIGN_IDENTITY:-}"
+NOTARYTOOL_PROFILE="${MEETINGBOT_NOTARYTOOL_PROFILE:-}"
+
+export MEETINGBOT_BUILD_SECURITY_MODE="$BUILD_SECURITY_MODE"
 
 cd "$PROJECT_ROOT"
 
@@ -74,6 +79,17 @@ hdiutil convert \
   -format UDZO \
   -imagekey zlib-level=9 \
   -o "$DMG_PATH" >/dev/null
+
+if [[ "$BUILD_SECURITY_MODE" == "distribution" ]]; then
+  codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$DMG_PATH"
+  xcrun notarytool submit \
+    "$DMG_PATH" \
+    --keychain-profile "$NOTARYTOOL_PROFILE" \
+    --wait
+  xcrun stapler staple "$DMG_PATH"
+  xcrun stapler validate "$DMG_PATH"
+  spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+fi
 
 cp "$PROJECT_ROOT/docs/THREAD_HANDOFF_SUMMARY.md" "$THREAD_HANDOFF_PATH"
 python3 "$PROJECT_ROOT/scripts/generate_release_manifest.py" artifact \

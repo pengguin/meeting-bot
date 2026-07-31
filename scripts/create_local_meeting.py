@@ -5,7 +5,6 @@ import json
 import os
 import shutil
 import signal
-import subprocess
 import sys
 import time
 import uuid
@@ -22,6 +21,7 @@ os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
 from chinese_text import simplify_chinese
+from audio_pipeline import AudioPipeline
 from llm_backend import SchemaValidationError, validate_json_data, write_json_atomic
 from local_meeting_drafts import (
     load_local_meeting_checkpoint,
@@ -29,11 +29,15 @@ from local_meeting_drafts import (
     write_local_meeting_request,
     write_local_meeting_state,
 )
+from markdown_safety import markdown_literal
 from asr_runtime import asr_runtime_description, create_asr_model, transcribe_with_asr_model
 from diarization_runtime import configure_diarization_pipeline, run_diarization_pipeline
 from meetingbot_config import (
     ASR_LANGUAGE,
     ASR_MODEL,
+    AUDIO_MAX_DECODED_MB,
+    AUDIO_MAX_DURATION_SECONDS,
+    AUDIO_STAGE_TIMEOUT_SECONDS,
     DIARIZATION_MODEL,
     FFMPEG_BIN,
     HF_TOKEN,
@@ -66,7 +70,19 @@ from transcript_material import (
     create_text_segments_from_transcript,
     normalize_uploaded_transcript_text,
 )
-from transcription_progress import TranscriptionProgress, audio_duration_seconds
+from transcription_progress import TranscriptionProgress
+
+
+LOCAL_AUDIO_LIMITS = AudioPipeline(
+    asr_model_name=ASR_MODEL,
+    diarization_model_name=DIARIZATION_MODEL,
+    hf_token=HF_TOKEN,
+    ffmpeg_bin=FFMPEG_BIN,
+    status_callback=lambda **_payload: None,
+    max_duration_seconds=AUDIO_MAX_DURATION_SECONDS,
+    max_decoded_mb=AUDIO_MAX_DECODED_MB,
+    stage_timeout_seconds=AUDIO_STAGE_TIMEOUT_SECONDS,
+)
 
 
 def acquire_local_meeting_lock():
@@ -189,48 +205,11 @@ def write_meeting_done_event(
 
 
 def convert_audio_to_wav_16k_mono(input_audio: Path, session_path: Path) -> Path:
-    output_wav = session_path / "analysis_audio_16k_mono.wav"
-    result = subprocess.run(
-        [
-            FFMPEG_BIN,
-            "-y",
-            "-i",
-            str(input_audio),
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-vn",
-            str(output_wav),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=1800,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            "FFmpeg 音频转换失败。\n"
-            f"STDOUT:\n{result.stdout}\n"
-            f"STDERR:\n{result.stderr}"
-        )
-    if not output_wav.exists():
-        raise RuntimeError("FFmpeg 未生成转换后的 WAV 文件")
-    return output_wav
+    return LOCAL_AUDIO_LIMITS.convert_audio_to_wav_16k_mono(input_audio, session_path)
 
 
 def load_waveform_for_pyannote(wav_path: Path) -> Dict:
-    import soundfile as sf
-    import torch
-
-    waveform_np, sample_rate = sf.read(str(wav_path), dtype="float32")
-    if waveform_np.ndim == 1:
-        waveform_np = waveform_np[None, :]
-    else:
-        waveform_np = waveform_np.T
-    return {
-        "waveform": torch.from_numpy(waveform_np),
-        "sample_rate": sample_rate,
-    }
+    return LOCAL_AUDIO_LIMITS.load_waveform_for_pyannote(wav_path)
 
 
 def diarize_audio(
@@ -238,6 +217,8 @@ def diarize_audio(
     session_path: Path,
     diarization_pipeline,
 ) -> List[Dict]:
+    LOCAL_AUDIO_LIMITS.validate_audio_duration(audio_path)
+    deadline = time.monotonic() + AUDIO_STAGE_TIMEOUT_SECONDS
     progress_state = {"step": "", "percent": -1, "updated_at": 0.0}
     step_labels = {
         "segmentation": "检测语音活动",
@@ -253,6 +234,8 @@ def diarize_audio(
         total: Optional[int] = None,
         **_kwargs,
     ) -> None:
+        if time.monotonic() > deadline:
+            raise TimeoutError("说话人分离超过允许处理时间，任务已中止")
         if completed is None or total is None or total <= 0:
             return
 
@@ -313,8 +296,10 @@ def transcribe_audio(
     session_path: Path,
     whisper_model,
 ) -> List[Dict]:
+    duration = LOCAL_AUDIO_LIMITS.validate_audio_duration(audio_path)
+    deadline = time.monotonic() + AUDIO_STAGE_TIMEOUT_SECONDS
     progress = TranscriptionProgress(
-        duration=audio_duration_seconds(audio_path),
+        duration=duration,
         update=lambda message: write_runtime_status(
             "processing",
             "transcribing",
@@ -326,6 +311,8 @@ def transcribe_audio(
     segments, _info = transcribe_with_asr_model(whisper_model, audio_path)
     transcript_segments: List[Dict] = []
     for segment in segments:
+        if time.monotonic() > deadline:
+            raise TimeoutError("语音转写超过允许处理时间，任务已中止")
         text = simplify_chinese(segment.text.strip())
         progress.advance(float(segment.end))
         if text:
@@ -422,13 +409,13 @@ def render_transcript_markdown(
     speaker_map: Dict[str, str],
     title: str,
 ) -> str:
-    lines = [f"# {title}", ""]
+    lines = [f"# {markdown_literal(title)}", ""]
     for segment in merge_adjacent_same_speaker(merged_segments):
         lines.append(
-            f"[{format_timestamp(segment['start'])}] "
-            f"{speaker_map.get(segment['speaker'], segment['speaker'])}："
+            f"\\[{format_timestamp(segment['start'])}\\] "
+            f"{markdown_literal(speaker_map.get(segment['speaker'], segment['speaker']))}："
         )
-        lines.append(segment["text"])
+        lines.append(markdown_literal(segment["text"]))
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -511,6 +498,7 @@ def create_session_from_audio(
         checkpoint(session_path, "audio_converted", "audio_converted")
     else:
         emit_progress("resuming", "已复用完成的音频预处理", session_path)
+    LOCAL_AUDIO_LIMITS.validate_audio_duration(analysis_audio)
 
     diarization_path = session_path / "diarization.json"
     diarization_segments = load_json(diarization_path, list)

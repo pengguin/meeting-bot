@@ -4,8 +4,14 @@ set -euo pipefail
 APP_NAME="会议纪要助手"
 EXECUTABLE_NAME="FeishuMeetingBot"
 BUNDLE_ID="com.pgui.FeishuMeetingBotMenuBar"
-APP_VERSION="0.5.1"
-BUILD_NUMBER="33"
+APP_VERSION="0.5.2"
+BUILD_NUMBER="34"
+ACTION="${1:-}"
+BUILD_SECURITY_MODE="${MEETINGBOT_BUILD_SECURITY_MODE:-distribution}"
+RELEASE_SIGNING_KEY="${MEETINGBOT_RELEASE_SIGNING_KEY:-}"
+RELEASE_PUBLIC_KEY="${MEETINGBOT_RELEASE_PUBLIC_KEY:-}"
+CODESIGN_IDENTITY="${MEETINGBOT_CODESIGN_IDENTITY:-}"
+NOTARYTOOL_PROFILE="${MEETINGBOT_NOTARYTOOL_PROFILE:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -19,6 +25,52 @@ MODULE_CACHE_DIR="/private/tmp/meetingbot-swift-module-cache"
 APP_ICON="$SOURCE_DIR/Resources/AppIcon.icns"
 BOOTSTRAP_PAYLOAD_DIR="$RESOURCES_DIR/bootstrap/meeting-bot"
 PAYLOAD_VERSION="$(date +%Y%m%d%H%M%S)"
+NOTARY_ARCHIVE="$DIST_DIR/$APP_NAME-notarization.zip"
+
+validate_security_configuration() {
+  [[ "$BUILD_SECURITY_MODE" == "development" || "$BUILD_SECURITY_MODE" == "distribution" ]] || {
+    echo "MEETINGBOT_BUILD_SECURITY_MODE 必须是 development 或 distribution" >&2
+    exit 1
+  }
+  [[ -z "$RELEASE_SIGNING_KEY" || -f "$RELEASE_SIGNING_KEY" ]] || {
+    echo "发布私钥不存在：$RELEASE_SIGNING_KEY" >&2
+    exit 1
+  }
+  [[ -z "$RELEASE_PUBLIC_KEY" || -f "$RELEASE_PUBLIC_KEY" ]] || {
+    echo "发布公钥不存在：$RELEASE_PUBLIC_KEY" >&2
+    exit 1
+  }
+  if [[ -n "$RELEASE_SIGNING_KEY" || -n "$RELEASE_PUBLIC_KEY" ]]; then
+    [[ -n "$RELEASE_SIGNING_KEY" && -n "$RELEASE_PUBLIC_KEY" ]] || {
+      echo "载荷签名必须同时配置发布私钥和公钥" >&2
+      exit 1
+    }
+  fi
+  if [[ "$BUILD_SECURITY_MODE" == "distribution" ]]; then
+    [[ -n "$RELEASE_SIGNING_KEY" && -n "$RELEASE_PUBLIC_KEY" ]] || {
+      echo "正式构建必须配置 MEETINGBOT_RELEASE_SIGNING_KEY 和 MEETINGBOT_RELEASE_PUBLIC_KEY" >&2
+      exit 1
+    }
+    [[ -n "$CODESIGN_IDENTITY" && "$CODESIGN_IDENTITY" != "-" ]] || {
+      echo "正式构建必须配置非 ad-hoc 的 MEETINGBOT_CODESIGN_IDENTITY" >&2
+      exit 1
+    }
+    [[ -n "$NOTARYTOOL_PROFILE" ]] || {
+      echo "正式构建必须配置 MEETINGBOT_NOTARYTOOL_PROFILE" >&2
+      exit 1
+    }
+  fi
+}
+
+validate_security_configuration
+if [[ "$ACTION" == "--security-preflight-only" ]]; then
+  echo "$BUILD_SECURITY_MODE"
+  exit 0
+fi
+[[ -z "$ACTION" || "$ACTION" == "--install" ]] || {
+  echo "未知参数：$ACTION" >&2
+  exit 1
+}
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR"
@@ -51,6 +103,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>MeetingBotBuildSecurityMode</key>
+    <string>$BUILD_SECURITY_MODE</string>
 </dict>
 </plist>
 PLIST
@@ -66,6 +120,7 @@ xcrun swiftc \
     "$SOURCE_DIR/EnvironmentHealth.swift" \
     "$SOURCE_DIR/LaunchAgentManager.swift" \
     "$SOURCE_DIR/BotRuntimeStore.swift" \
+    "$SOURCE_DIR/PayloadVerifier.swift" \
     "$SOURCE_DIR/BootstrapInstaller.swift" \
     "$SOURCE_DIR/AppSettings.swift" \
     "$SOURCE_DIR/SetupWizard.swift" \
@@ -104,24 +159,11 @@ rsync -a \
 printf '%s\n' "$PAYLOAD_VERSION" > "$RESOURCES_DIR/payload-version.txt"
 touch "$BOOTSTRAP_PAYLOAD_DIR/.meetingbot-packaged-payload"
 
-RELEASE_SIGNING_KEY="${MEETINGBOT_RELEASE_SIGNING_KEY:-}"
-RELEASE_PUBLIC_KEY="${MEETINGBOT_RELEASE_PUBLIC_KEY:-}"
-if [[ -n "$RELEASE_SIGNING_KEY" || -n "$RELEASE_PUBLIC_KEY" ]]; then
-  [[ -n "$RELEASE_SIGNING_KEY" && -n "$RELEASE_PUBLIC_KEY" ]] || {
-    echo "启用独立发布签名时必须同时配置 MEETINGBOT_RELEASE_SIGNING_KEY 和 MEETINGBOT_RELEASE_PUBLIC_KEY" >&2
-    exit 1
-  }
-  [[ -f "$RELEASE_SIGNING_KEY" ]] || {
-    echo "发布私钥不存在：$RELEASE_SIGNING_KEY" >&2
-    exit 1
-  }
-  [[ -f "$RELEASE_PUBLIC_KEY" ]] || {
-    echo "发布公钥不存在：$RELEASE_PUBLIC_KEY" >&2
-    exit 1
-  }
-  cp "$RELEASE_PUBLIC_KEY" "$BOOTSTRAP_PAYLOAD_DIR/release-public-key.pem"
+if [[ -n "$RELEASE_PUBLIC_KEY" ]]; then
+  cp "$RELEASE_PUBLIC_KEY" "$RESOURCES_DIR/release-public-key.pem"
 fi
 
+MEETINGBOT_RELEASE_SIGNING_KEY="$RELEASE_SIGNING_KEY" \
 python3 "$PROJECT_ROOT/scripts/generate_release_manifest.py" payload \
   --root "$BOOTSTRAP_PAYLOAD_DIR" \
   --output "$BOOTSTRAP_PAYLOAD_DIR/release-manifest.json" \
@@ -129,15 +171,35 @@ python3 "$PROJECT_ROOT/scripts/generate_release_manifest.py" payload \
   --signature "$BOOTSTRAP_PAYLOAD_DIR/release-manifest.sig" \
   --app-version "$APP_VERSION" \
   --build-number "$BUILD_NUMBER" \
-  --payload-version "$PAYLOAD_VERSION"
+  --payload-version "$PAYLOAD_VERSION" \
+  --security-mode "$BUILD_SECURITY_MODE"
 
-if command -v codesign >/dev/null 2>&1; then
-codesign --force --sign - "$APP_BUNDLE"
+if [[ "$BUILD_SECURITY_MODE" == "distribution" ]]; then
+  codesign \
+    --force \
+    --options runtime \
+    --timestamp \
+    --sign "$CODESIGN_IDENTITY" \
+    "$APP_BUNDLE"
+  codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+  rm -f "$NOTARY_ARCHIVE"
+  ditto -c -k --keepParent "$APP_BUNDLE" "$NOTARY_ARCHIVE"
+  xcrun notarytool submit \
+    "$NOTARY_ARCHIVE" \
+    --keychain-profile "$NOTARYTOOL_PROFILE" \
+    --wait
+  xcrun stapler staple "$APP_BUNDLE"
+  xcrun stapler validate "$APP_BUNDLE"
+  spctl --assess --type execute --verbose=2 "$APP_BUNDLE"
+  rm -f "$NOTARY_ARCHIVE"
+else
+  echo "[build][warning] 正在生成仅供本机开发测试的 ad-hoc 签名 App" >&2
+  codesign --force --sign - "$APP_BUNDLE"
 fi
 
 echo "$APP_BUNDLE"
 
-if [[ "${1:-}" == "--install" ]]; then
+if [[ "$ACTION" == "--install" ]]; then
     INSTALL_PATH="/Applications/$APP_NAME.app"
     mkdir -p "$INSTALL_PATH"
     rsync -a --delete "$APP_BUNDLE/" "$INSTALL_PATH/"

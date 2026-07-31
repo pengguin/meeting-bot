@@ -435,6 +435,7 @@ final class MeetingLibraryStore: ObservableObject {
     private var pendingProgressReload: DispatchWorkItem?
     private var pendingMeetingScan = false
     private var pendingForcedMeetingScan = false
+    private var metadataWritesBlocked = false
 
     init() {
         reload()
@@ -1701,20 +1702,31 @@ final class MeetingLibraryStore: ObservableObject {
     private func loadMetadata() {
         guard AppPaths.exists(AppPaths.libraryMetadataFile) else {
             metadata = LibraryMetadataDocument()
+            metadataWritesBlocked = false
+            if lastErrorMessage?.hasPrefix("会议库元数据") == true {
+                lastErrorMessage = nil
+            }
             return
         }
 
         do {
             let data = try Data(contentsOf: AppPaths.libraryMetadataFile)
             metadata = try JSONDecoder().decode(LibraryMetadataDocument.self, from: data)
-            lastErrorMessage = nil
+            metadataWritesBlocked = false
+            if lastErrorMessage?.hasPrefix("会议库元数据") == true {
+                lastErrorMessage = nil
+            }
         } catch {
-            metadata = LibraryMetadataDocument()
+            metadataWritesBlocked = true
             lastErrorMessage = "会议库元数据读取失败：\(error.localizedDescription)"
         }
     }
 
     private func saveMetadata() {
+        guard !metadataWritesBlocked else {
+            lastErrorMessage = "会议库元数据处于写保护状态；请先恢复或修正元数据文件，再重新载入会议库。"
+            return
+        }
         do {
             try fileManager.createDirectory(
                 at: AppPaths.libraryDirectory,
@@ -1754,8 +1766,7 @@ final class MeetingLibraryStore: ObservableObject {
             in: sessionURL,
             matching: ["transcript_named.md", "transcript_anon.md"]
         )
-        let transcript = transcriptURL
-            .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+        let transcript = transcriptURL.map(transcriptSearchPreview) ?? ""
         let speakerMapURL = sessionURL.appendingPathComponent("speaker_map.json")
         let detectedSpeakers = loadSpeakerIDs(from: speakerMapURL)
         let transcriptSegmentsURL = preferredFile(
@@ -1906,6 +1917,20 @@ final class MeetingLibraryStore: ObservableObject {
         }
 
         return try? JSONDecoder().decode(MeetingReportSnapshot.self, from: data)
+    }
+
+    nonisolated private static func transcriptSearchPreview(at url: URL) -> String {
+        let previewByteLimit = 16 * 1024
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return ""
+        }
+        defer {
+            try? handle.close()
+        }
+        guard let data = try? handle.read(upToCount: previewByteLimit) else {
+            return ""
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     nonisolated private static func preferredFile(in directory: URL, matching names: [String]) -> URL? {
@@ -2124,10 +2149,21 @@ final class MeetingLibraryStore: ObservableObject {
                 continue
             }
             lines.append(
-                "- [\(timestamp(segment.start)) - \(timestamp(segment.end))] \(speaker)：\(text)"
+                "- \\[\(timestamp(segment.start)) \\- \(timestamp(segment.end))\\] "
+                    + "\(markdownLiteral(speaker))：\(markdownLiteral(text))"
             )
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func markdownLiteral(_ value: String) -> String {
+        let specialCharacters = CharacterSet(charactersIn: "\\`*_{}[]<>()#+-.!|>")
+        return value.unicodeScalars.reduce(into: "") { output, scalar in
+            if specialCharacters.contains(scalar) {
+                output.append("\\")
+            }
+            output.unicodeScalars.append(scalar)
+        }
     }
 
     private func timestamp(_ seconds: Double) -> String {

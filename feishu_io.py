@@ -1,12 +1,19 @@
 import json
+import os
+import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
 import requests
 from lark_oapi.api.im.v1 import ReplyMessageRequest, ReplyMessageRequestBody
+
+
+class ReferencedMessageAuthorizationError(PermissionError):
+    """Raised when a referenced message cannot be bound to the current chat."""
 
 
 class FeishuIO:
@@ -17,6 +24,8 @@ class FeishuIO:
         download_dir: Path,
         download_max_mb: int,
         client: Any,
+        download_total_max_mb: int = 4096,
+        retention_hours: int = 24,
         http: Any = requests,
         sleep=time.sleep,
         clock=time.time,
@@ -25,6 +34,8 @@ class FeishuIO:
         self.app_secret = app_secret
         self.download_dir = Path(download_dir)
         self.download_max_mb = download_max_mb
+        self.download_total_max_bytes = max(1, download_total_max_mb) * 1024 * 1024
+        self.retention_seconds = max(1, retention_hours) * 60 * 60
         self.client = client
         self.http = http
         self.sleep = sleep
@@ -32,6 +43,7 @@ class FeishuIO:
         self._tenant_token = ""
         self._tenant_token_expires_at = 0.0
         self._tenant_token_lock = threading.Lock()
+        self._download_lock = threading.Lock()
 
     def reply_text(self, message_id: str, text: str) -> None:
         request = (
@@ -101,10 +113,9 @@ class FeishuIO:
         filename: str,
         resource_type: str = "file",
     ) -> Path:
-        self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.download_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         safe_filename = filename.replace("/", "_").replace("\\", "_").replace(" ", "_")
         safe_filename = safe_filename.strip("._") or "download"
-        save_path = self.download_dir / f"{int(self.clock())}_{safe_filename}"
         url = (
             "https://open.feishu.cn/open-apis/im/v1/messages/"
             f"{quote(message_id, safe='')}/resources/{quote(file_key, safe='')}"
@@ -123,23 +134,90 @@ class FeishuIO:
         except (TypeError, ValueError):
             declared_size = 0
         if declared_size > max_bytes:
+            self._close_response(response)
             raise RuntimeError(f"文件超过允许大小（上限 {self.download_max_mb} MB）")
-        received = 0
+        with self._download_lock:
+            self._cleanup_expired_downloads_locked()
+            existing_bytes = self._download_bytes_locked()
+            if declared_size and existing_bytes + declared_size > self.download_total_max_bytes:
+                self._close_response(response)
+                raise RuntimeError("临时下载目录空间不足，请稍后重试")
+
+            task_dir = self.download_dir / f"task-{uuid.uuid4().hex}"
+            task_dir.mkdir(mode=0o700)
+            save_path = task_dir / safe_filename
+            received = 0
+            try:
+                with save_path.open("xb") as handle:
+                    os.chmod(save_path, 0o600)
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        received += len(chunk)
+                        if received > max_bytes:
+                            raise RuntimeError(
+                                f"文件超过允许大小（上限 {self.download_max_mb} MB）"
+                            )
+                        if existing_bytes + received > self.download_total_max_bytes:
+                            raise RuntimeError("临时下载目录空间不足，请稍后重试")
+                        handle.write(chunk)
+            except Exception:
+                shutil.rmtree(task_dir, ignore_errors=True)
+                raise
+            finally:
+                self._close_response(response)
+            return save_path
+
+    def cleanup_download(self, downloaded_path: Optional[Path]) -> None:
+        if downloaded_path is None:
+            return
         try:
-            with save_path.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        continue
-                    received += len(chunk)
-                    if received > max_bytes:
-                        raise RuntimeError(
-                            f"文件超过允许大小（上限 {self.download_max_mb} MB）"
-                        )
-                    handle.write(chunk)
-        except Exception:
-            save_path.unlink(missing_ok=True)
-            raise
-        return save_path
+            task_dir = Path(downloaded_path).resolve().parent
+            task_dir.relative_to(self.download_dir.resolve())
+        except (OSError, ValueError):
+            return
+        if task_dir == self.download_dir.resolve() or not task_dir.name.startswith("task-"):
+            return
+        with self._download_lock:
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+    def cleanup_expired_downloads(self) -> None:
+        with self._download_lock:
+            self._cleanup_expired_downloads_locked()
+
+    def _cleanup_expired_downloads_locked(self) -> None:
+        cutoff = self.clock() - self.retention_seconds
+        if not self.download_dir.exists():
+            return
+        for path in self.download_dir.iterdir():
+            try:
+                modified_at = path.stat().st_mtime
+            except OSError:
+                continue
+            if modified_at >= cutoff:
+                continue
+            if path.is_dir() and path.name.startswith("task-"):
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.is_file():
+                path.unlink(missing_ok=True)
+
+    def _download_bytes_locked(self) -> int:
+        total = 0
+        if not self.download_dir.exists():
+            return total
+        for path in self.download_dir.rglob("*"):
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    @staticmethod
+    def _close_response(response: Any) -> None:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
 
     def get_message_detail(self, message_id: str) -> Optional[Dict]:
         response = self.http.get(
@@ -187,13 +265,41 @@ class FeishuIO:
         self,
         content: Dict,
         message_obj=None,
+        *,
+        expected_chat_id: str,
     ) -> Optional[Dict]:
         referenced_id = self.extract_referenced_message_id(content, message_obj)
         if not referenced_id:
             return None
+        expected_chat_id = str(expected_chat_id or "").strip()
+        if not expected_chat_id:
+            print(
+                "[Security] 拒绝读取引用消息："
+                f"message_id={referenced_id}, reason=missing_current_chat"
+            )
+            raise ReferencedMessageAuthorizationError(
+                "无法验证引用消息是否属于当前会话"
+            )
         item = self.get_message_detail(referenced_id)
         if not item:
             return None
+        referenced_chat_id = str(item.get("chat_id") or "").strip()
+        if not referenced_chat_id:
+            print(
+                "[Security] 拒绝读取引用消息："
+                f"message_id={referenced_id}, reason=missing_referenced_chat"
+            )
+            raise ReferencedMessageAuthorizationError(
+                "无法验证引用消息是否属于当前会话"
+            )
+        if referenced_chat_id != expected_chat_id:
+            print(
+                "[Security] 拒绝读取引用消息："
+                f"message_id={referenced_id}, reason=chat_mismatch"
+            )
+            raise ReferencedMessageAuthorizationError(
+                "引用消息不属于当前会话"
+            )
         body = item.get("body", {})
         raw_content = body.get("content") or item.get("content") or "{}"
         try:

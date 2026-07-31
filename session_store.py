@@ -7,13 +7,45 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
-from meetingbot_config import BASE_DIR, SESSION_DIR
+from meetingbot_config import BASE_DIR, SESSION_DIR, TRANSCRIPT_MAX_CHARACTERS, TRANSCRIPT_MAX_MB
 
 
 LATEST_SESSION_FILE = BASE_DIR / "latest_session.txt"
+LATEST_SESSIONS_DIR = BASE_DIR / "runtime" / "latest_sessions"
 
 
-def create_session(audio_path: Path) -> Path:
+def session_scope_digest(session_scope: Optional[str]) -> str:
+    normalized = (session_scope or "").strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest() if normalized else ""
+
+
+def latest_session_file(session_scope: Optional[str] = None) -> Path:
+    digest = session_scope_digest(session_scope)
+    if not digest:
+        return LATEST_SESSION_FILE
+    return LATEST_SESSIONS_DIR / f"{digest}.txt"
+
+
+def _write_latest_session_file(path: Path, session_path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(str(session_path), encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _is_session_directory(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(SESSION_DIR.resolve())
+    except (OSError, ValueError):
+        return False
+    return path.is_dir()
+
+
+def create_session(audio_path: Path, session_scope: Optional[str] = None) -> Path:
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
     session_path = SESSION_DIR / session_id
     session_path.mkdir(parents=True, exist_ok=True)
@@ -21,34 +53,40 @@ def create_session(audio_path: Path) -> Path:
     target_audio = session_path / audio_path.name
     shutil.copy2(audio_path, target_audio)
 
-    LATEST_SESSION_FILE.write_text(str(session_path), encoding="utf-8")
+    set_latest_session(session_path, session_scope=session_scope)
     return session_path
 
 
-def create_text_session(source_name: str = "transcript.txt") -> Path:
+def create_text_session(
+    source_name: str = "transcript.txt",
+    session_scope: Optional[str] = None,
+) -> Path:
     safe_name = re.sub(r"[^0-9A-Za-z._\-\u4e00-\u9fa5]+", "_", source_name).strip("_") or "transcript.txt"
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
     session_path = SESSION_DIR / session_id
     session_path.mkdir(parents=True, exist_ok=True)
-    LATEST_SESSION_FILE.write_text(str(session_path), encoding="utf-8")
+    set_latest_session(session_path, session_scope=session_scope)
     (session_path / "source_name.txt").write_text(safe_name, encoding="utf-8")
     return session_path
 
 
-def set_latest_session(session_path: Path) -> None:
-    LATEST_SESSION_FILE.write_text(str(session_path), encoding="utf-8")
+def set_latest_session(session_path: Path, session_scope: Optional[str] = None) -> None:
+    if not _is_session_directory(session_path):
+        raise ValueError("最近会议必须位于会议输出目录内")
+    _write_latest_session_file(latest_session_file(session_scope), session_path.resolve())
 
 
-def get_latest_session() -> Optional[Path]:
-    if not LATEST_SESSION_FILE.exists():
+def get_latest_session(session_scope: Optional[str] = None) -> Optional[Path]:
+    path_file = latest_session_file(session_scope)
+    if not path_file.exists():
         return None
 
-    raw = LATEST_SESSION_FILE.read_text(encoding="utf-8").strip()
+    raw = path_file.read_text(encoding="utf-8").strip()
     if not raw:
         return None
 
     path = Path(raw)
-    if not path.exists():
+    if not _is_session_directory(path):
         return None
 
     return path
@@ -132,12 +170,14 @@ def find_reusable_session(
     source_sha256: str,
     source_kind: str,
     session_dir: Path = SESSION_DIR,
+    session_scope: Optional[str] = None,
 ) -> Optional[Path]:
     if not source_sha256:
         return None
     if not session_dir.exists():
         return None
 
+    scope_digest = session_scope_digest(session_scope)
     for session_path in sorted(session_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if not session_path.is_dir():
             continue
@@ -145,12 +185,16 @@ def find_reusable_session(
             continue
 
         metadata = load_session_metadata(session_path)
+        if scope_digest and metadata.get("session_scope_sha256") != scope_digest:
+            continue
         if (
             metadata.get("source_kind") == source_kind
             and metadata.get("source_sha256") == source_sha256
         ):
             return session_path
 
+        if scope_digest:
+            continue
         if source_kind == "audio" and not metadata and legacy_audio_source_matches(session_path, source_sha256):
             return session_path
         if source_kind == "transcript_text" and not metadata and legacy_text_source_matches(session_path, source_sha256):
@@ -159,14 +203,33 @@ def find_reusable_session(
     return None
 
 
-def read_text_file(path: Path) -> str:
-    raw = path.read_bytes()
+def read_text_file(
+    path: Path,
+    *,
+    max_bytes: int = TRANSCRIPT_MAX_MB * 1024 * 1024,
+    max_characters: int = TRANSCRIPT_MAX_CHARACTERS,
+) -> str:
+    try:
+        declared_size = path.stat().st_size
+    except OSError as error:
+        raise RuntimeError(f"无法读取转录文字材料：{error}") from error
+    if declared_size > max_bytes:
+        raise RuntimeError(f"转录文字材料超过允许大小（上限 {max_bytes // 1024 // 1024} MB）")
+    with path.open("rb") as handle:
+        raw = handle.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise RuntimeError(f"转录文字材料超过允许大小（上限 {max_bytes // 1024 // 1024} MB）")
     for encoding in ["utf-8-sig", "utf-8", "gb18030", "big5"]:
         try:
-            return raw.decode(encoding).strip()
+            text = raw.decode(encoding).strip()
+            break
         except UnicodeDecodeError:
             continue
-    return raw.decode("utf-8", errors="ignore").strip()
+    else:
+        text = raw.decode("utf-8", errors="ignore").strip()
+    if len(text) > max_characters:
+        raise RuntimeError(f"转录文字材料字符数超过上限（{max_characters} 字符）")
+    return text
 
 
 def is_text_material_file(filename: str) -> bool:

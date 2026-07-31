@@ -3,7 +3,9 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import subprocess
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,11 +51,26 @@ def payload_manifest(args: argparse.Namespace) -> None:
     if signature:
         excluded.add(signature)
 
-    files = [
-        path
-        for path in root.rglob("*")
-        if path.is_file() and path.resolve() not in excluded
-    ]
+    files = []
+    normalized_paths = set()
+    for path in root.rglob("*"):
+        mode = path.lstat().st_mode
+        relative = path.relative_to(root).as_posix()
+        if stat.S_ISLNK(mode):
+            raise SystemExit(f"payload contains a symbolic link: {relative}")
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode):
+            raise SystemExit(f"payload contains an unsupported file type: {relative}")
+        if path.resolve() in excluded:
+            continue
+        if "\n" in relative or "\r" in relative or "\\" in relative:
+            raise SystemExit(f"payload contains an unsafe path: {relative!r}")
+        normalized = unicodedata.normalize("NFC", relative).casefold()
+        if normalized in normalized_paths:
+            raise SystemExit(f"payload contains a conflicting path: {relative}")
+        normalized_paths.add(normalized)
+        files.append(path)
     files.sort(key=lambda path: path.relative_to(root).as_posix())
     checksum_lines = []
     total_bytes = 0
@@ -68,6 +85,7 @@ def payload_manifest(args: argparse.Namespace) -> None:
     payload = {
         "schema_version": 1,
         "kind": "meetingbot-payload",
+        "security_mode": args.security_mode,
         "app_version": args.app_version,
         "build_number": args.build_number,
         "payload_version": args.payload_version,
@@ -131,6 +149,11 @@ def parser() -> argparse.ArgumentParser:
     payload.add_argument("--app-version", required=True)
     payload.add_argument("--build-number", required=True)
     payload.add_argument("--payload-version", required=True)
+    payload.add_argument(
+        "--security-mode",
+        choices=["development", "distribution"],
+        default="development",
+    )
     payload.add_argument("--minimum-macos", default="14.0")
     payload.set_defaults(handler=payload_manifest)
 

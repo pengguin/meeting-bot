@@ -7,6 +7,129 @@ struct EnvironmentCheck: Identifiable, Equatable {
     let isHealthy: Bool
 }
 
+enum ToolDiscovery {
+    private static let fileManager = FileManager.default
+
+    static func environmentWithToolPaths() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let existing = environment["PATH"]?.split(separator: ":").map(String.init) ?? []
+        var combined = searchDirectories()
+        for path in existing where !combined.contains(path) {
+            combined.append(path)
+        }
+        environment["PATH"] = combined.joined(separator: ":")
+        return environment
+    }
+
+    static func resolveExecutable(_ command: String) -> String? {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        if trimmed.contains("/") {
+            let expanded = (trimmed as NSString).expandingTildeInPath
+            return fileManager.isExecutableFile(atPath: expanded) ? expanded : nil
+        }
+        guard trimmed.range(of: #"^[A-Za-z0-9._+-]+$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        for directory in searchDirectories() {
+            let candidate = URL(fileURLWithPath: directory).appendingPathComponent(trimmed).path
+            if fileManager.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return resolveFromLoginShell(trimmed)
+    }
+
+    static func libreOfficeExecutable() -> String? {
+        if let resolved = resolveExecutable("soffice") ?? resolveExecutable("libreoffice") {
+            return resolved
+        }
+        let home = fileManager.homeDirectoryForCurrentUser
+        let candidates = [
+            URL(fileURLWithPath: "/Applications/LibreOffice.app/Contents/MacOS/soffice").path,
+            home.appendingPathComponent("Applications/LibreOffice.app/Contents/MacOS/soffice").path,
+            "/opt/libreoffice/program/soffice",
+        ]
+        return candidates.first(where: fileManager.isExecutableFile(atPath:))
+    }
+
+    private static func searchDirectories() -> [String] {
+        let home = fileManager.homeDirectoryForCurrentUser
+        var directories = [
+            home.appendingPathComponent(".local/bin").path,
+            home.appendingPathComponent("bin").path,
+            home.appendingPathComponent(".volta/bin").path,
+            home.appendingPathComponent(".bun/bin").path,
+            home.appendingPathComponent("Library/pnpm").path,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+        directories.append(contentsOf: childBinDirectories(
+            under: home.appendingPathComponent(".nvm/versions/node")
+        ))
+        directories.append(contentsOf: npxBinDirectories(
+            under: home.appendingPathComponent(".npm/_npx")
+        ))
+        var seen = Set<String>()
+        return directories.filter { seen.insert($0).inserted }
+    }
+
+    private static func childBinDirectories(under root: URL) -> [String] {
+        let children = (try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return children
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+            .map { $0.appendingPathComponent("bin").path }
+    }
+
+    private static func npxBinDirectories(under root: URL) -> [String] {
+        let children = (try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return children
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+            .map { $0.appendingPathComponent("node_modules/.bin").path }
+    }
+
+    private static func resolveFromLoginShell(_ command: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lic", "command -v '\(command)' 2>/dev/null"]
+        process.environment = environmentWithToolPaths()
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                return nil
+            }
+            let output = String(
+                data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard output.hasPrefix("/"), fileManager.isExecutableFile(atPath: output) else {
+                return nil
+            }
+            return output
+        } catch {
+            return nil
+        }
+    }
+}
+
 enum EnvironmentHealthChecker {
     static func run() -> [EnvironmentCheck] {
         let env = AppPaths.loadEnvValues()
@@ -27,7 +150,8 @@ enum EnvironmentHealthChecker {
                 id: "ffmpeg",
                 title: "ffmpeg",
                 detail: env["FFMPEG_BIN"] ?? "ffmpeg",
-                command: env["FFMPEG_BIN"] ?? "ffmpeg"
+                command: env["FFMPEG_BIN"] ?? "ffmpeg",
+                fallbackCommand: "ffmpeg"
             ),
             libreOfficeCheck(),
             llmBackendCheck(env),
@@ -45,6 +169,7 @@ enum EnvironmentHealthChecker {
                 title: "Codex CLI",
                 detail: env["CODEX_BIN"] ?? "codex",
                 command: env["CODEX_BIN"] ?? "codex",
+                fallbackCommand: "codex",
                 validationArguments: ["login", "status"]
             )
         }
@@ -110,9 +235,11 @@ enum EnvironmentHealthChecker {
         title: String,
         detail: String,
         command: String,
+        fallbackCommand: String? = nil,
         validationArguments: [String] = []
     ) -> EnvironmentCheck {
-        let resolved = resolveExecutable(command)
+        let resolved = ToolDiscovery.resolveExecutable(command)
+            ?? fallbackCommand.flatMap(ToolDiscovery.resolveExecutable)
         guard let resolved else {
             return EnvironmentCheck(
                 id: id,
@@ -141,9 +268,7 @@ enum EnvironmentHealthChecker {
     }
 
     private static func libreOfficeCheck() -> EnvironmentCheck {
-        let knownPath = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
-        let resolved = resolveExecutable("soffice")
-            ?? (FileManager.default.isExecutableFile(atPath: knownPath) ? knownPath : nil)
+        let resolved = ToolDiscovery.libreOfficeExecutable()
 
         return EnvironmentCheck(
             id: "libreoffice",
@@ -153,64 +278,11 @@ enum EnvironmentHealthChecker {
         )
     }
 
-    private static func environmentWithToolPaths() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        let toolDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
-        let existing = environment["PATH"]?.split(separator: ":").map(String.init) ?? []
-        var combined = toolDirectories
-        for path in existing where !combined.contains(path) {
-            combined.append(path)
-        }
-        environment["PATH"] = combined.joined(separator: ":")
-        return environment
-    }
-
-    private static func resolveExecutable(_ command: String) -> String? {
-        guard !command.isEmpty else {
-            return nil
-        }
-
-        if command.contains("/") {
-            return FileManager.default.isExecutableFile(atPath: command) ? command : nil
-        }
-
-        for directory in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
-            let candidate = "\(directory)/\(command)"
-            if FileManager.default.isExecutableFile(atPath: candidate) {
-                return candidate
-            }
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        process.arguments = [command]
-        process.environment = environmentWithToolPaths()
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                return nil
-            }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return output?.isEmpty == false ? output : nil
-        } catch {
-            return nil
-        }
-    }
-
     private static func validateExecutable(_ executable: String, arguments: [String]) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.environment = environmentWithToolPaths()
+        process.environment = ToolDiscovery.environmentWithToolPaths()
 
         let pipe = Pipe()
         process.standardOutput = pipe

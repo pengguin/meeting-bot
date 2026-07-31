@@ -18,6 +18,10 @@
 		8A1001092C00000100000001 /* MeetingLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1000092C00000100000001 /* MeetingLibraryStore.swift */; };
 		8A10010A2C00000100000001 /* MainWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A10000A2C00000100000001 /* MainWindowView.swift */; };
 		8A10010B2C00000100000001 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A10000B2C00000100000001 /* AppSettings.swift */; };
+		8A10010C2C00000100000001 /* BootstrapInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A10000C2C00000100000001 /* BootstrapInstaller.swift */; };
+		8A10010D2C00000100000001 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A10000D2C00000100000001 /* DesignSystem.swift */; };
+		8A10010E2C00000100000001 /* SetupWizard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A10000E2C00000100000001 /* SetupWizard.swift */; };
+		8A10010F2C00000100000001 /* PayloadVerifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A10000F2C00000100000001 /* PayloadVerifier.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +36,10 @@
 		8A1000092C00000100000001 /* MeetingLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingLibraryStore.swift; sourceTree = "<group>"; };
 		8A10000A2C00000100000001 /* MainWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowView.swift; sourceTree = "<group>"; };
 		8A10000B2C00000100000001 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		8A10000C2C00000100000001 /* BootstrapInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BootstrapInstaller.swift; sourceTree = "<group>"; };
+		8A10000D2C00000100000001 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
+		8A10000E2C00000100000001 /* SetupWizard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupWizard.swift; sourceTree = "<group>"; };
+		8A10000F2C00000100000001 /* PayloadVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayloadVerifier.swift; sourceTree = "<group>"; };
 		8A1000302C00000100000001 /* 会议纪要助手.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "会议纪要助手.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -67,6 +75,10 @@
 				8A1000092C00000100000001 /* MeetingLibraryStore.swift */,
 				8A10000A2C00000100000001 /* MainWindowView.swift */,
 				8A10000B2C00000100000001 /* AppSettings.swift */,
+				8A10000C2C00000100000001 /* BootstrapInstaller.swift */,
+				8A10000D2C00000100000001 /* DesignSystem.swift */,
+				8A10000E2C00000100000001 /* SetupWizard.swift */,
+				8A10000F2C00000100000001 /* PayloadVerifier.swift */,
 				8A1000072C00000100000001 /* AppIcon.icns */,
 			);
 			path = MeetingBotMenuBarApp;
@@ -159,6 +171,10 @@
 				8A1001092C00000100000001 /* MeetingLibraryStore.swift in Sources */,
 				8A10010A2C00000100000001 /* MainWindowView.swift in Sources */,
 				8A10010B2C00000100000001 /* AppSettings.swift in Sources */,
+				8A10010C2C00000100000001 /* BootstrapInstaller.swift in Sources */,
+				8A10010D2C00000100000001 /* DesignSystem.swift in Sources */,
+				8A10010E2C00000100000001 /* SetupWizard.swift in Sources */,
+				8A10010F2C00000100000001 /* PayloadVerifier.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -222,9 +238,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "会议纪要助手";
 				INFOPLIST_KEY_CFBundleIconFile = AppIcon;
-				INFOPLIST_KEY_CFBundleShortVersionString = 0.5.1;
-				INFOPLIST_KEY_CFBundleVersion = 33;
+				INFOPLIST_KEY_CFBundleShortVersionString = 0.5.2;
+				INFOPLIST_KEY_CFBundleVersion = 34;
 				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_MeetingBotBuildSecurityMode = development;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -245,9 +262,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "会议纪要助手";
 				INFOPLIST_KEY_CFBundleIconFile = AppIcon;
-				INFOPLIST_KEY_CFBundleShortVersionString = 0.5.1;
-				INFOPLIST_KEY_CFBundleVersion = 33;
+				INFOPLIST_KEY_CFBundleShortVersionString = 0.5.2;
+				INFOPLIST_KEY_CFBundleVersion = 34;
 				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_MeetingBotBuildSecurityMode = development;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

@@ -1,6 +1,8 @@
 import json
 import os
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -36,14 +38,60 @@ DIARIZATION_MODEL = os.getenv(
 def resolve_tool_path(raw_value: str, fallback: str) -> str:
     value = raw_value.strip() or fallback
     if "/" in value:
-        return value
+        expanded = Path(value).expanduser()
+        if expanded.is_file() and os.access(expanded, os.X_OK):
+            return str(expanded)
+        value = fallback
     resolved = shutil.which(value)
     if resolved:
         return resolved
-    for directory in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]:
+    home = Path.home()
+    search_directories = [
+        home / ".local" / "bin",
+        home / "bin",
+        home / ".volta" / "bin",
+        home / ".bun" / "bin",
+        home / "Library" / "pnpm",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+        Path("/usr/bin"),
+        Path("/bin"),
+    ]
+    nvm_versions = home / ".nvm" / "versions" / "node"
+    if nvm_versions.is_dir():
+        search_directories.extend(
+            path / "bin"
+            for path in sorted(nvm_versions.iterdir(), reverse=True)
+            if path.is_dir()
+        )
+    npm_cache = home / ".npm" / "_npx"
+    if npm_cache.is_dir():
+        search_directories.extend(
+            path / "node_modules" / ".bin"
+            for path in sorted(npm_cache.iterdir(), reverse=True)
+            if path.is_dir()
+        )
+    for directory in search_directories:
         candidate = Path(directory) / value
         if candidate.exists() and os.access(candidate, os.X_OK):
             return str(candidate)
+    try:
+        shell_result = subprocess.run(
+            ["/bin/zsh", "-lic", f"command -v {shlex.quote(value)}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        shell_path = shell_result.stdout.strip().splitlines()[0]
+        if (
+            shell_result.returncode == 0
+            and Path(shell_path).is_file()
+            and os.access(shell_path, os.X_OK)
+        ):
+            return shell_path
+    except (OSError, subprocess.SubprocessError, IndexError):
+        pass
     return value
 
 
@@ -60,7 +108,19 @@ LLM_TIMEOUT_SECONDS = positive_env_int("LLM_TIMEOUT_SECONDS", 600)
 LLM_MAX_ATTEMPTS = positive_env_int("LLM_MAX_ATTEMPTS", 3)
 TASK_MAX_WORKERS = positive_env_int("TASK_MAX_WORKERS", 1)
 TASK_MAX_PENDING = positive_env_int("TASK_MAX_PENDING", 8)
+TASK_MAX_PENDING_PER_PRINCIPAL = positive_env_int("TASK_MAX_PENDING_PER_PRINCIPAL", 2)
 DOWNLOAD_MAX_MB = positive_env_int("DOWNLOAD_MAX_MB", 2048)
+DOWNLOAD_TOTAL_MAX_MB = positive_env_int("DOWNLOAD_TOTAL_MAX_MB", 4096)
+DOWNLOAD_RETENTION_HOURS = positive_env_int("DOWNLOAD_RETENTION_HOURS", 24)
+TRANSCRIPT_MAX_MB = positive_env_int("TRANSCRIPT_MAX_MB", 16)
+TRANSCRIPT_MAX_CHARACTERS = positive_env_int("TRANSCRIPT_MAX_CHARACTERS", 4_000_000)
+TRANSCRIPT_MAX_SEGMENTS = positive_env_int("TRANSCRIPT_MAX_SEGMENTS", 20_000)
+AUDIO_MAX_DURATION_SECONDS = positive_env_int("AUDIO_MAX_DURATION_SECONDS", 3 * 60 * 60)
+AUDIO_MAX_DECODED_MB = positive_env_int("AUDIO_MAX_DECODED_MB", 1024)
+AUDIO_STAGE_TIMEOUT_SECONDS = positive_env_int(
+    "AUDIO_STAGE_TIMEOUT_SECONDS",
+    2 * 60 * 60,
+)
 
 REPORT_BODY_FONT = os.getenv("REPORT_BODY_FONT", "PingFang SC").strip() or "PingFang SC"
 REPORT_HEADING_FONT = os.getenv("REPORT_HEADING_FONT", REPORT_BODY_FONT).strip() or REPORT_BODY_FONT

@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import threading
 import time
@@ -28,6 +29,10 @@ class AudioPipeline:
         diarization_runner=run_diarization_pipeline,
         pipeline_configurer=configure_diarization_pipeline,
         duration_reader=audio_duration_seconds,
+        probe_runner=subprocess.run,
+        max_duration_seconds: int = 3 * 60 * 60,
+        max_decoded_mb: int = 1024,
+        stage_timeout_seconds: int = 2 * 60 * 60,
     ) -> None:
         self.asr_model_name = asr_model_name
         self.diarization_model_name = diarization_model_name
@@ -40,6 +45,10 @@ class AudioPipeline:
         self.diarization_runner = diarization_runner
         self.pipeline_configurer = pipeline_configurer
         self.duration_reader = duration_reader
+        self.probe_runner = probe_runner
+        self.max_duration_seconds = max(1, int(max_duration_seconds))
+        self.max_decoded_bytes = max(1, int(max_decoded_mb)) * 1024 * 1024
+        self.stage_timeout_seconds = max(1, int(stage_timeout_seconds))
         self._model_lock = threading.Lock()
         self._diarization_lock = threading.Lock()
         self._whisper_model = None
@@ -78,37 +87,100 @@ class AudioPipeline:
         session_path: Path,
     ) -> Path:
         output_wav = session_path / "analysis_audio_16k_mono.wav"
-        result = self.command_runner(
-            [
-                self.ffmpeg_bin,
-                "-y",
-                "-i",
-                str(input_audio),
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-vn",
-                str(output_wav),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
-        if result.returncode != 0:
+        duration = self.validate_audio_duration(input_audio)
+        expected_decoded_bytes = int(duration * 16_000 * 2) + 44
+        if expected_decoded_bytes > self.max_decoded_bytes:
             raise RuntimeError(
-                "FFmpeg 音频转换失败。\n"
-                f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+                "音频解码后预计超过允许大小"
+                f"（上限 {self.max_decoded_bytes // 1024 // 1024} MB）"
             )
-        if not output_wav.exists():
-            raise RuntimeError("FFmpeg 未生成转换后的 WAV 文件")
-        return output_wav
+        try:
+            result = self.command_runner(
+                [
+                    self.ffmpeg_bin,
+                    "-y",
+                    "-i",
+                    str(input_audio),
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-vn",
+                    str(output_wav),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=min(1800, self.stage_timeout_seconds),
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    "FFmpeg 音频转换失败。\n"
+                    f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+                )
+            if not output_wav.exists():
+                raise RuntimeError("FFmpeg 未生成转换后的 WAV 文件")
+            if output_wav.stat().st_size > self.max_decoded_bytes:
+                raise RuntimeError(
+                    "音频解码结果超过允许大小"
+                    f"（上限 {self.max_decoded_bytes // 1024 // 1024} MB）"
+                )
+            return output_wav
+        except Exception:
+            output_wav.unlink(missing_ok=True)
+            raise
 
-    @staticmethod
-    def load_waveform_for_pyannote(wav_path: Path) -> Dict:
+    def validate_audio_duration(self, audio_path: Path) -> float:
+        try:
+            duration = float(self.duration_reader(audio_path))
+        except Exception:
+            ffmpeg_path = Path(self.ffmpeg_bin)
+            sibling_ffprobe = ffmpeg_path.with_name("ffprobe")
+            ffprobe = (
+                str(sibling_ffprobe)
+                if sibling_ffprobe.is_file()
+                else shutil.which("ffprobe")
+            )
+            if not ffprobe:
+                raise RuntimeError("无法读取音频时长：未找到 ffprobe")
+            result = self.probe_runner(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(audio_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            try:
+                duration = float(result.stdout.strip())
+            except (AttributeError, TypeError, ValueError) as error:
+                raise RuntimeError("无法读取音频时长") from error
+        if duration <= 0:
+            raise RuntimeError("无法确认音频时长")
+        if duration > self.max_duration_seconds:
+            limit_hours = self.max_duration_seconds / 3600
+            raise RuntimeError(f"录音时长超过允许上限（{limit_hours:g} 小时）")
+        return duration
+
+    def load_waveform_for_pyannote(self, wav_path: Path) -> Dict:
         import soundfile as sf
         import torch
 
+        info = sf.info(str(wav_path))
+        max_frames = self.max_decoded_bytes // max(1, info.channels * 4)
+        if info.frames > max_frames:
+            raise RuntimeError(
+                "音频波形超过内存处理上限"
+                f"（最多 {max_frames} 帧）"
+            )
+        if info.duration > self.max_duration_seconds:
+            raise RuntimeError("录音时长超过允许上限")
         waveform_np, sample_rate = sf.read(str(wav_path), dtype="float32")
         waveform_np = waveform_np[None, :] if waveform_np.ndim == 1 else waveform_np.T
         return {
@@ -118,7 +190,9 @@ class AudioPipeline:
 
     def diarize_audio(self, audio_path: Path, session_path: Path) -> List[Dict]:
         print(f"[Diarization] 开始说话人分离：{audio_path.name}")
+        self.validate_audio_duration(audio_path)
         audio_for_pyannote = self.load_waveform_for_pyannote(audio_path)
+        deadline = time.monotonic() + self.stage_timeout_seconds
         progress_state = {"step": "", "percent": -1, "updated_at": 0.0}
         step_labels = {
             "segmentation": "检测语音活动",
@@ -134,6 +208,8 @@ class AudioPipeline:
             total: Optional[int] = None,
             **_kwargs,
         ) -> None:
+            if time.monotonic() > deadline:
+                raise TimeoutError("说话人分离超过允许处理时间，任务已中止")
             if completed is None or total is None or total <= 0:
                 return
             percent = min(100, max(0, int(completed * 100 / total)))
@@ -200,8 +276,10 @@ class AudioPipeline:
 
     def transcribe_audio(self, audio_path: Path, session_path: Path) -> List[Dict]:
         print(f"[ASR] 开始转写：{audio_path.name}")
+        duration = self.validate_audio_duration(audio_path)
+        deadline = time.monotonic() + self.stage_timeout_seconds
         progress = TranscriptionProgress(
-            duration=self.duration_reader(audio_path),
+            duration=duration,
             update=lambda message: self.status_callback(
                 task_status="processing",
                 stage="transcribing",
@@ -213,6 +291,8 @@ class AudioPipeline:
         segments, _info = self.asr_transcriber(self.get_whisper_model(), audio_path)
         transcript_segments: List[Dict] = []
         for segment in segments:
+            if time.monotonic() > deadline:
+                raise TimeoutError("语音转写超过允许处理时间，任务已中止")
             text = simplify_chinese(segment.text.strip())
             progress.advance(float(segment.end))
             if text:

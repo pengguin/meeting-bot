@@ -13,6 +13,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
+from markdown_safety import markdown_literal, markdown_table_cell
 from meetingbot_config import REPORT_BODY_FONT, REPORT_HEADING_FONT, get_template_names
 from speaker_naming import anonymous_speaker_label
 
@@ -792,7 +793,7 @@ def plain_text(value) -> str:
 
 
 def md_cell(value) -> str:
-    return plain_text(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+    return markdown_table_cell(value)
 
 
 def html_escape(value) -> str:
@@ -824,20 +825,20 @@ def generate_formal_minutes_markdown(
     meta = report_base_meta(report, named)
     metrics = report.get("key_metrics", {})
     lines = [
-        f"# {plain_text(meta['title'])}",
+        f"# {markdown_literal(meta['title']).strip()}",
         "",
         f"- 生成时间：{meta['generated_at']}",
         f"- 报告版本：{meta['version_name']}",
-        f"- 会议类型：{meta['meeting_type']}",
+        f"- 会议类型：{markdown_literal(meta['meeting_type']).strip()}",
         "- 使用说明：AI 自动整理生成，适合会后复盘；正式外发前请人工核对",
         "",
         "## 会议纪要",
         "",
         "## 01 总览",
         "",
-        f"**核心判断：** {plain_text(report.get('one_sentence_takeaway', '待确认'))}",
+        f"**核心判断：** {markdown_literal(report.get('one_sentence_takeaway', '待确认')).strip()}",
         "",
-        plain_text(report.get("executive_summary", "待确认")),
+        markdown_literal(report.get("executive_summary", "待确认")).strip(),
         "",
         "| 结论 | 行动 | 待确认 |",
         "| --- | --- | --- |",
@@ -849,7 +850,12 @@ def generate_formal_minutes_markdown(
     if conclusions:
         lines.extend(["## 02 关键要点", ""])
         for idx, item in enumerate(conclusions, start=1):
-            lines.extend([f"### {idx:02d} {plain_text(item.get('title'))}", "", plain_text(item.get("detail")), ""])
+            lines.extend([
+                f"### {idx:02d} {markdown_literal(item.get('title')).strip()}",
+                "",
+                markdown_literal(item.get("detail")).strip(),
+                "",
+            ])
 
     actions = report.get("action_items", [])
     if actions:
@@ -874,9 +880,14 @@ def generate_formal_minutes_markdown(
     if topics:
         lines.extend(["## 04 议题复盘", ""])
         for idx, topic in enumerate(topics, start=1):
-            lines.extend([f"### {idx:02d} {plain_text(topic.get('title'))}", "", plain_text(topic.get("summary")), ""])
+            lines.extend([
+                f"### {idx:02d} {markdown_literal(topic.get('title')).strip()}",
+                "",
+                markdown_literal(topic.get("summary")).strip(),
+                "",
+            ])
             for point in topic.get("points", []):
-                lines.append(f"- {plain_text(point)}")
+                lines.append(f"- {markdown_literal(point).strip()}")
             lines.append("")
 
     questions = report.get("open_questions", [])
@@ -884,9 +895,9 @@ def generate_formal_minutes_markdown(
         lines.extend(["## 05 待确认问题", ""])
         for idx, item in enumerate(questions, start=1):
             lines.extend([
-                f"### Q{idx} {plain_text(item.get('question'))}",
+                f"### Q{idx} {markdown_literal(item.get('question')).strip()}",
                 "",
-                f"重要性：{plain_text(item.get('why_it_matters'))}",
+                f"重要性：{markdown_literal(item.get('why_it_matters')).strip()}",
                 "",
             ])
 
@@ -894,7 +905,7 @@ def generate_formal_minutes_markdown(
     if speakers:
         lines.extend(["## 06 发言人观点", "", "| 发言人 | 角色 | 主要观点 |", "| --- | --- | --- |"])
         for speaker in speakers:
-            views = "<br>".join(plain_text(v) for v in speaker.get("main_views", []))
+            views = " / ".join(plain_text(v) for v in speaker.get("main_views", []))
             lines.append(
                 "| "
                 + " | ".join([md_cell(speaker.get("speaker")), md_cell(speaker.get("role", "待确认")), md_cell(views)])
@@ -912,7 +923,7 @@ def generate_formal_minutes_markdown(
     if notes:
         lines.extend(["## 08 说明", ""])
         for note in notes:
-            lines.append(f"- {plain_text(note)}")
+            lines.append(f"- {markdown_literal(note).strip()}")
         lines.append("")
 
     output_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
@@ -1161,10 +1172,13 @@ def generate_formal_minutes_html(
 # ============================================================
 
 def find_soffice_command() -> str:
+    home = Path.home()
     candidates = [
         shutil.which("soffice"),
         shutil.which("libreoffice"),
         "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        str(home / "Applications" / "LibreOffice.app" / "Contents" / "MacOS" / "soffice"),
+        "/opt/libreoffice/program/soffice",
     ]
 
     for candidate in candidates:
