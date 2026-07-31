@@ -1,4 +1,4 @@
-# 会议纪要助手 0.7.0 安装文档
+# 会议纪要助手 0.7.2 安装文档
 
 ## 配套文档
 
@@ -57,9 +57,10 @@ codex --version
 
 ### 推荐方式：二合一图形化安装盘
 
-默认分发物为 `会议纪要助手 0.7.0 安装盘.dmg`。其中包含：
+默认分发物为 `会议纪要助手 0.7.2 安装盘.dmg`。其中包含：
 
 - `会议纪要助手.app`
+- `会议纪要助手卸载器.app`
 - `Applications` 快捷入口
 - `说明文档/安装与升级说明.html`
 - `说明文档/使用说明.html`
@@ -68,7 +69,7 @@ codex --version
 
 使用方式：
 
-1. 双击打开 `会议纪要助手 0.7.0 安装盘.dmg`。
+1. 双击打开 `会议纪要助手 0.7.2 安装盘.dmg`。
 2. 将 `会议纪要助手.app` 拖入 `Applications`。
 3. 在“应用程序”中首次打开 App。
 4. App 会自动判断当前用户目录中是否已有安装：
@@ -196,7 +197,7 @@ bash "$HOME/Library/Application Support/meeting-bot/scripts/doctor.sh"
 
 ## 从旧版本升级
 
-如果已经安装并运行过旧版，仍然优先使用 `会议纪要助手 0.7.0 安装盘.dmg`。把新版 App 拖入 `Applications` 覆盖旧版后，再打开 App，程序会自动识别为升级路径；如果旧版仍在 `$HOME/Library/Application Support/meetin-bot`、`$HOME/Library/Application Support/feishu-meeting-bot`、`$HOME/meetin-bot`、`$HOME/meeting-bot` 或 `$HOME/feishu-meeting-bot`，会把 `.env`、虚拟环境和用户数据迁移到新的 `$HOME/Library/Application Support/meeting-bot`，并把旧根目录下的日志迁到 `$HOME/Library/Logs/meeting-bot`。
+如果已经安装并运行过旧版，仍然优先使用 `会议纪要助手 0.7.2 安装盘.dmg`。把新版 App 拖入 `Applications` 覆盖旧版后，再打开 App，程序会自动识别为升级路径；如果旧版仍在 `$HOME/Library/Application Support/meetin-bot`、`$HOME/Library/Application Support/feishu-meeting-bot`、`$HOME/meetin-bot`、`$HOME/meeting-bot` 或 `$HOME/feishu-meeting-bot`，会把 `.env`、虚拟环境和用户数据迁移到新的 `$HOME/Library/Application Support/meeting-bot`，并把旧根目录下的日志迁到 `$HOME/Library/Logs/meeting-bot`。
 
 0.4.0 起，升级过程会分别备份运行组件、Python 环境和已安装 App。0.5.0 在备份前增加载荷完整性校验。任一阶段失败时会自动恢复旧版，`sessions/`、`downloads/`、`library/`、运行状态和本地配置不会被覆盖；安装窗口会显示失败阶段与恢复结果。
 
@@ -290,32 +291,27 @@ bash scripts/build_setup_package.sh
 
 - 重新构建菜单栏 App。
 - 排除 `.git`、本地运行数据和密钥，并在完整安装时清理旧 App 资源残留。
-- 生成默认交付物 `dist/会议纪要助手 0.7.0 安装盘.dmg`。
+- 生成默认交付物 `dist/会议纪要助手 0.7.2 安装盘.dmg`。
 - 把安装与升级说明、使用说明、更新记录和开发路线图一并放入安装盘。
 - 同步在 `dist/` 下生成线程交接汇总。
-- 生成 `dist/release-manifest-0.7.0.json`，记录安装盘大小、SHA-256、版本和构建号；如配置 ECDSA P-256 发布密钥，同时生成签名文件。
+- 生成 `dist/release-manifest-0.7.2.json`，记录安装盘大小、SHA-256、版本和构建号；如配置 ECDSA P-256 发布密钥，同时生成签名文件。
 
 ## 卸载
 
-停止并移除后台服务：
+1. 打开安装盘中的 `会议纪要助手卸载器.app`。
+2. 检查扫描结果。卸载器只会处理能够证明属于本应用的 App、后台服务、安装载荷、环境、缓存和日志。
+3. 默认保留会议资料。卸载器会先把应用管理的配置、会议库、录音、转录稿、纪要、备份和日志移动到用户选择的位置。
+4. 如确实需要删除资料，单独勾选“删除应用管理的会议数据、配置和日志”；确认框会列出精确路径和预计大小，再进行第二次确认。
+5. 安装目录外的自定义录音或纪要目录始终原地保留；无法证明归属的文件也不会删除。
+
+命令行仅作为后台服务停止的故障排查手段：
 
 ```bash
 launchctl bootout gui/$(id -u) "$HOME/Library/LaunchAgents/com.pgui.feishu-meeting-bot.plist"
 rm "$HOME/Library/LaunchAgents/com.pgui.feishu-meeting-bot.plist"
 ```
 
-删除菜单栏 App：
-
-```bash
-rm -rf "/Applications/会议纪要助手.app"
-```
-
-如确认不再需要历史会议数据，可删除后台支持目录和日志目录：
-
-```bash
-rm -rf "$HOME/Library/Application Support/meeting-bot"
-rm -rf "$HOME/Library/Logs/meeting-bot"
-```
+不要手动删除整个自定义录音目录、纪要目录或来源不明的安装目录。
 
 ## 常见问题
 

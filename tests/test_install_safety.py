@@ -83,13 +83,42 @@ def test_dependency_discovery_covers_non_homebrew_install_locations():
     swift = (SWIFT_SOURCE_DIR / "EnvironmentHealth.swift").read_text(encoding="utf-8")
     preflight = (REPO_ROOT / "scripts" / "preflight.sh").read_text(encoding="utf-8")
     install = INSTALL_SCRIPT.read_text(encoding="utf-8")
+    doctor = (REPO_ROOT / "scripts" / "doctor.sh").read_text(encoding="utf-8")
 
     for marker in [".local/bin", ".nvm/versions/node", ".npm/_npx", "Library/pnpm"]:
         assert marker in swift
         assert marker in preflight
         assert marker in install
+        assert marker in doctor
     assert "HOME/Applications/LibreOffice.app" in preflight
     assert "HOME/Applications/LibreOffice.app" in install
+    assert "/usr/bin/hostinfo" in preflight
+
+
+def test_doctor_falls_back_when_configured_tool_path_is_stale(tmp_path):
+    doctor = REPO_ROOT / "scripts" / "doctor.sh"
+    fake_home = tmp_path / "home"
+    discovered = fake_home / ".local" / "bin" / "codex"
+    discovered.parent.mkdir(parents=True)
+    discovered.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    discovered.chmod(0o755)
+
+    command = """
+source "$1"
+HOME="$2"
+PATH="/usr/bin:/bin"
+resolve_tool_path codex /missing/old/node/bin/codex
+"""
+    result = subprocess.run(
+        ["/bin/bash", "-c", command, "meetingbot-test", str(doctor), str(fake_home)],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "MEETINGBOT_DOCTOR_LIBRARY_ONLY": "1"},
+    )
+
+    assert result.stdout.strip() == str(discovered)
 
 
 def test_stale_configured_tool_path_falls_back_to_discovery():

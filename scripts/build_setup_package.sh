@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="会议纪要助手"
-VERSION="0.7.0"
+VERSION="0.7.2"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP_ROOT="$PROJECT_ROOT/dist/setup"
 DMG_STAGING="$SETUP_ROOT/dmg"
@@ -23,10 +23,14 @@ cd "$PROJECT_ROOT"
 echo "[setup] 构建可拖拽安装的 App"
 bash MeetingBotMenuBarApp/build_release_app.sh >/dev/null
 
+echo "[setup] 构建配套卸载器"
+bash MeetingBotUninstaller/build_uninstaller_app.sh >/dev/null
+
 echo "[setup] 构建 dmg"
 rm -rf "$SETUP_ROOT"
 mkdir -p "$DMG_STAGING/.background" "$DMG_STAGING/说明文档"
 ditto "$PROJECT_ROOT/dist/$APP_NAME.app" "$DMG_STAGING/$APP_NAME.app"
+ditto "$PROJECT_ROOT/dist/会议纪要助手卸载器.app" "$DMG_STAGING/会议纪要助手卸载器.app"
 ln -s /Applications "$DMG_STAGING/Applications"
 cp "$PROJECT_ROOT/docs/SETUP_GUIDE.html" "$DMG_STAGING/说明文档/安装与升级说明.html"
 cp "$PROJECT_ROOT/docs/SOFTWARE_GUIDE.html" "$DMG_STAGING/说明文档/使用说明.html"
@@ -63,7 +67,8 @@ tell application "Finder"
         set background picture of icon view options of container window to file ".background:background.png"
         set position of item "${APP_NAME}.app" of container window to {160, 210}
         set position of item "Applications" of container window to {480, 210}
-        set position of item "说明文档" of container window to {320, 320}
+        set position of item "${APP_NAME}卸载器.app" of container window to {160, 360}
+        set position of item "说明文档" of container window to {480, 360}
         close
         open
         update without registering applications

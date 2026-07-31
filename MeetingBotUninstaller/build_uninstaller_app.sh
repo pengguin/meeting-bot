@@ -4,8 +4,11 @@ set -euo pipefail
 APP_NAME="会议纪要助手卸载器"
 EXECUTABLE_NAME="MeetingBotUninstaller"
 BUNDLE_ID="com.pgui.MeetingBotUninstaller"
-APP_VERSION="0.2.14"
-BUILD_NUMBER="1"
+APP_VERSION="0.7.2"
+BUILD_NUMBER="38"
+ACTION="${1:-}"
+BUILD_SECURITY_MODE="${MEETINGBOT_BUILD_SECURITY_MODE:-distribution}"
+CODESIGN_IDENTITY="${MEETINGBOT_CODESIGN_IDENTITY:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -16,6 +19,19 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 MODULE_CACHE_DIR="/private/tmp/meetingbot-uninstaller-swift-module-cache"
 APP_ICON="$SCRIPT_DIR/Resources/AppIcon.icns"
+
+if [[ "$BUILD_SECURITY_MODE" != "development" && "$BUILD_SECURITY_MODE" != "distribution" ]]; then
+    echo "MEETINGBOT_BUILD_SECURITY_MODE 必须是 development 或 distribution" >&2
+    exit 1
+fi
+if [[ "$BUILD_SECURITY_MODE" == "distribution" && -z "$CODESIGN_IDENTITY" ]]; then
+    echo "正式构建必须配置 MEETINGBOT_CODESIGN_IDENTITY" >&2
+    exit 1
+fi
+if [[ "$ACTION" == "--security-preflight-only" ]]; then
+    printf '%s\n' "$BUILD_SECURITY_MODE"
+    exit 0
+fi
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR"
@@ -65,7 +81,10 @@ if [[ ! -f "$APP_ICON" ]]; then
 fi
 cp "$APP_ICON" "$RESOURCES_DIR/AppIcon.icns"
 
-if command -v codesign >/dev/null 2>&1; then
+if [[ "$BUILD_SECURITY_MODE" == "distribution" ]]; then
+    codesign --force --timestamp --options runtime --sign "$CODESIGN_IDENTITY" "$APP_BUNDLE"
+else
+    echo "[build][warning] 正在生成仅供本机开发测试的 ad-hoc 签名卸载器" >&2
     codesign --force --sign - "$APP_BUNDLE"
 fi
 

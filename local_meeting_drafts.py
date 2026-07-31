@@ -25,9 +25,14 @@ def runtime_timestamp() -> str:
 def write_local_meeting_state(session_path: Path, payload: dict) -> Path:
     """原子写入草稿会议的状态快照到会话目录。"""
     state_path = session_path / STATE_FILENAME
+    state_payload = dict(payload)
+    # runtime/status.json and the per-session draft use different durable
+    # document types even though they share the same visible status fields.
+    state_payload.pop("schema_version", None)
+    state_payload.pop("document_type", None)
     return write_versioned_json_object(
         state_path,
-        payload,
+        state_payload,
         document_type="local_meeting_state",
     )
 

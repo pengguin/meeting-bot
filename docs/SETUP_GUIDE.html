@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>会议纪要助手 0.7.0 安装与升级说明</title>
+  <title>会议纪要助手 0.7.2 安装与升级说明</title>
   <style>
     :root {
       --text: #17202a;
@@ -83,10 +83,10 @@
 </head>
 <body>
   <main>
-    <h1>会议纪要助手 0.7.0 安装与升级说明</h1>
+    <h1>会议纪要助手 0.7.2 安装与升级说明</h1>
     <p class="lead">
       该文档合并了安装、依赖和升级说明。默认分发物为
-      <code>会议纪要助手 0.7.0 安装盘.dmg</code>，其中包含可拖拽安装的 App、<code>Applications</code> 快捷入口和说明文档文件夹。
+      <code>会议纪要助手 0.7.2 安装盘.dmg</code>，其中包含可拖拽安装的 App、配套卸载器、<code>Applications</code> 快捷入口和说明文档文件夹。
     </p>
 
     <h2>安装前准备</h2>
@@ -131,7 +131,7 @@
 
     <h2>推荐安装方式</h2>
     <ol>
-      <li>双击打开 <code>会议纪要助手 0.7.0 安装盘.dmg</code>。</li>
+      <li>双击打开 <code>会议纪要助手 0.7.2 安装盘.dmg</code>。</li>
       <li>窗口中左侧是 <code>会议纪要助手.app</code>，右侧是 <code>Applications</code> 文件夹，按中间箭头把 App 拖过去即可。</li>
       <li>在“应用程序”中首次打开 App。App 会自动判断当前用户目录中是否已有安装：
         <ul>
@@ -222,6 +222,13 @@ ASR_BEAM_SIZE=5</code></pre>
     <pre><code>bash scripts/install.sh --dependency-mode auto
 bash scripts/doctor.sh
 bash scripts/upgrade.sh</code></pre>
+
+    <h2>安全卸载</h2>
+    <p>
+      使用安装盘中的 <code>会议纪要助手卸载器.app</code>。默认会把应用管理的会议资料、配置和日志移动到用户选择的位置；
+      只有单独勾选删除资料后才会删除，并在确认前列出精确路径和预计大小。安装目录外的自定义录音或纪要目录、
+      无法证明由本应用创建的文件、源码目录和 1.0 数据不会被删除。
+    </p>
 
     <h2>常见检查</h2>
     <ul>

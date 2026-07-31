@@ -1,6 +1,6 @@
 # 会议纪要助手 线程交接总结
 
-生成时间：2026-05-18（2026-07-31 更新至 0.7.0 统一任务内核）
+生成时间：2026-05-18（2026-07-31 更新至 0.7 封版与 1.0 原生重构交接）
 
 本文档用于帮助新线程中的 agent 快速理解本轮开发上下文、已完成工作、关键文件和后续开发入口。
 
@@ -24,7 +24,7 @@
 
 ## 本轮主要工作
 
-### 当前主线状态（2026-07-31 / 0.7.0 build 36）
+### 当前主线状态（2026-07-31 / 0.7.2 build 38 封版候选）
 
 本地 `main` 已以 UI 分支为后续主线，0.4.0 完成可续跑流程与事务式安装，0.5.0 按路线图完成核心模块拆分、会议库后台增量索引与发布完整性链路。旧主线基线 `3303606` 仅作为历史远端分支保留，不再作为后续开发入口。
 
@@ -37,7 +37,9 @@
 - 说话人分离和语音转写均有实时进度；Apple Silicon 说话人分离优先 MPS，不兼容步骤回退 CPU。
 - 说话人显示统一为 `SPEAKER_00 -> 说话人1`、`UNKNOWN -> 未知说话人`；保存真实姓名后会同步重生成转录稿、会议纪要和已有导出文件。
 - 原始转录音频拖动改为预览时间、松手后一次性跳转，降低长音频播放进度条卡顿。
-- 发布脚本 `MeetingBotMenuBarApp/build_release_app.sh` 当前版本为 `0.7.0`、构建号 `36`；Xcode、升级脚本与安装盘脚本版本已同步。
+- 发布脚本、Xcode、升级脚本、安装盘脚本和卸载器当前版本均为 `0.7.2`、构建号 `38`。
+- 卸载器采用所有权白名单和载荷清单逐文件清理；删除资料前列出受管路径与预计大小，外部自定义目录、源码仓库和 1.0 重构目录不进入删除范围。
+- 安装盘同时交付主 App 和图形化卸载器；正式模式缺少 Developer ID 签名身份时，两者任一构建都会失败关闭。
 - `0.3.1` 修复会议库配色实时联动：列表图标、选中背景、标签、日期筛选、原始转录活动段落和会议条目右侧“已生成纪要”状态圆点均跟随设置页蓝 / 绿 / 灰配色刷新。
 - `0.3.2` 在本地新增会议非主动中止失败时保留草稿：已有转录稿可重试生成纪要，只有原始录音可在原会话目录重新处理；崩溃遗留的处理中草稿会通过任务锁恢复为可操作状态。
 - `0.4.0` 将草稿扩展为阶段检查点流程：暂停、崩溃或 App 重开后复用已完成的音频预处理、说话人分离、转写、对齐、分类和纪要产物；纪要失败可沿用原格式重试。
@@ -423,13 +425,14 @@
 ### 打包产物
 
 - `dist/会议纪要助手.app`
-- 默认安装盘路径：`dist/会议纪要助手 0.7.0 安装盘.dmg`
-- 默认线程交接导出路径：`dist/线程交接汇总 0.7.0.md`
-- 发布元数据路径：`dist/release-manifest-0.7.0.json`
+- `dist/会议纪要助手卸载器.app`
+- 默认安装盘路径：`dist/会议纪要助手 0.7.2 安装盘.dmg`
+- 默认线程交接导出路径：`dist/线程交接汇总 0.7.2.md`
+- 发布元数据路径：`dist/release-manifest-0.7.2.json`
 
 ## 已执行验证
 
-2026-07-31 / 0.7.0 执行以下检查：
+2026-07-31 / 0.7.2 封版候选执行以下检查：
 
 ```bash
 "$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m pytest --version
@@ -438,6 +441,9 @@ bash -n scripts/install.sh scripts/build_setup_package.sh scripts/build_wheelhou
 PYTHON_BIN="$HOME/Library/Application Support/meeting-bot/.venv/bin/python" ENV_FILE=/tmp/meeting-bot-missing-env-for-preflight bash scripts/preflight.sh
 "$HOME/Library/Application Support/meeting-bot/.venv/bin/python" -m py_compile scripts/create_local_meeting.py scripts/regenerate_session.py scripts/export_session_file.py scripts/generate_release_manifest.py scripts/data_recovery.py scripts/task_control.py bot.py feishu_io.py audio_pipeline.py runtime_status.py durable_storage.py task_ledger.py task_runtime.py asr_runtime.py diarization_runtime.py transcription_progress.py llm_backend.py speaker_naming.py meetingbot_config.py report_export.py report_generation.py session_store.py transcript_material.py
 bash MeetingBotMenuBarApp/build_release_app.sh
+bash MeetingBotUninstaller/build_uninstaller_app.sh
+'dist/会议纪要助手卸载器.app/Contents/MacOS/MeetingBotUninstaller' --self-test
+'dist/会议纪要助手卸载器.app/Contents/MacOS/MeetingBotUninstaller' --audit-scan
 bash 'dist/会议纪要助手.app/Contents/Resources/bootstrap/meeting-bot/scripts/install.sh' --verify-payload-only
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/会议纪要助手.app/Contents/Info.plist'
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' 'dist/会议纪要助手.app/Contents/Info.plist'
@@ -448,16 +454,22 @@ codesign --verify --deep --strict --verbose=2 'dist/会议纪要助手.app'
 验证结果：
 
 - pytest 已安装并可用，版本为 `9.1.0`。
-- 测试结果：`110 passed`。
+- 测试结果：`114 passed`。
 - Shell 脚本语法检查通过。
-- 安装前检查可执行完成；使用缺失 `.env` 路径时不会中断，当前机器仅有“无法读取物理内存”的提示级警告。
+- 安装前检查全部通过；`sysctl` 受限时会使用 `hostinfo` 读取物理内存，非 Homebrew Codex CLI 及失效旧路径回退验证通过。
 - Python 编译检查通过。
-- 菜单栏 App 已重新构建，`Info.plist` 版本为 `0.7.0`，构建号为 `36`。
+- 菜单栏 App 和卸载器已重新构建，`Info.plist` 版本均为 `0.7.2`，构建号均为 `38`。
 - App 可执行文件为 `Mach-O 64-bit executable arm64`。
 - `codesign --verify --deep --strict` 通过。
 - App 内嵌载荷路径为 `Contents/Resources/bootstrap/meeting-bot`，未生成旧 `bootstrap/feishu-meeting-bot`。
 - App 内载荷原样校验通过；自动化测试确认任一受清单保护文件被修改时校验失败。
-- `scripts/build_setup_package.sh` 默认版本号已同步到 `0.7.0`；当前已验证开发版 App 构建与签名完整性，正式 DMG 仍需真实发布签名和 Apple 公证凭据。
+- 卸载器临时目录自检通过；实际无副作用扫描未把 `/Users/Peng/Developer/meeting-bot` 或 `/Users/Peng/Developer/meeting-bot-1.0-native` 列为卸载对象。
+- 内部测试安装盘只读挂载检查通过，根目录同时包含主 App、图形化卸载器、Applications 快捷入口和说明文档。
+- 隔离升级失败演练命中 `after-project-copy` 测试节点并以退出码 `97` 中止；旧运行组件自动恢复，`.env`、会议资料和无关文件逐项比对未改变。
+- `scripts/build_setup_package.sh` 默认版本号已同步到 `0.7.2`；当前已验证开发版 App 构建与签名完整性，正式 DMG 仍需真实发布签名和 Apple 公证凭据。
+- 隔离的合成转录稿和两位合成说话人录音均完成端到端处理；录音任务生成两个 speaker ID，虚构实名修改后转录、纪要和 HTML/Markdown 同步更新。
+- 飞书官方鉴权接口通过；未向真实会话发送消息。详细证据与正式发布阻断项见`docs/RELEASE_0.7_VERIFICATION.md`。
+- `0.7.2 build 38` 开发候选已覆盖安装并重启；安装标记与 App 版本一致，LaunchAgent 运行、后台空闲，已安装目录自检全部通过。
 
 ## 备份目录
 
@@ -521,7 +533,11 @@ ditto "$HOME/Library/Application Support/meeting-bot/dist/会议纪要助手.app
 
 ## 建议后续开发任务
 
-后续以 `docs/DEVELOPMENT_ROADMAP.md` 为唯一规划入口，并继续执行“技术底座优先”的冻结期。0.5.2 安全基线、0.6 数据持久化和 0.7 统一任务内核已经完成；下一阶段为 0.8 进程隔离、资源治理与可观测性，再进入 0.9 安装升级与发布工程。底座总验收通过前，不启动会议库高级检索、批处理、模型管理等新增功能。
+当前只执行 `docs/RELEASE_0.7_CLOSURE_PLAN.md`。0.7 是最后一个 Python 架构版本；原计划的 0.8、0.9 不再在当前代码上继续，相关进程隔离、资源治理、安装升级和发布要求迁入 1.0 原生重构。
+
+1.0 的独立工作区为 `/Users/Peng/Developer/meeting-bot-1.0-native`。该目录与当前 `/Users/Peng/Developer/meeting-bot` 分离，但仍属于同一产品线。1.0 在 M0 架构验证、设计原型和三方评审通过前只允许编写文档与 PoC，不开始正式功能实现，也不得直接读写 0.7 用户资料。
+
+0.7 封版完成后，应以最终 0.7 标签作为迁移合同基线；后续高严重性修复留在维护分支，再按需要选择性移植到 1.0，不把两个目录混用为同一运行环境。
 
 Developer ID 签名、公证和 stapling 仍需真实 Apple Developer 凭据，是公开分发门槛，不应在无凭据环境中标记为已完成。
 

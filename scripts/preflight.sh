@@ -205,14 +205,22 @@ check_architecture() {
 }
 
 check_memory() {
-  local bytes gb
+  local bytes gb hostinfo_gb
   bytes="$(sysctl -n hw.memsize 2>/dev/null || true)"
   if [[ -z "$bytes" ]]; then
-    warn "无法读取物理内存；建议至少 ${RECOMMENDED_MEMORY_GB}GB"
-    return
+    hostinfo_gb="$(
+      /usr/bin/hostinfo 2>/dev/null |
+        awk '/Primary memory available:/ {printf "%d", $4; exit}' || true
+    )"
+    if [[ "$hostinfo_gb" =~ ^[0-9]+$ ]]; then
+      gb="$hostinfo_gb"
+    else
+      warn "无法读取物理内存；建议至少 ${RECOMMENDED_MEMORY_GB}GB"
+      return
+    fi
+  else
+    gb=$(( bytes / 1024 / 1024 / 1024 ))
   fi
-
-  gb=$(( bytes / 1024 / 1024 / 1024 ))
   if (( gb < MIN_MEMORY_GB )); then
     fail "物理内存约 ${gb}GB；至少需要 ${MIN_MEMORY_GB}GB"
   elif (( gb < RECOMMENDED_MEMORY_GB )); then

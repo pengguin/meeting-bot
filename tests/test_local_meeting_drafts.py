@@ -86,6 +86,20 @@ class WriteLocalMeetingStateTests(unittest.TestCase):
             self.assertEqual(data["message"], "正在生成会议纪要")
             self.assertEqual(data["source"], "local_meeting")
 
+    def test_runtime_status_envelope_is_retyped_for_session_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session_path = Path(tmp)
+            payload = self._payload()
+            payload["schema_version"] = 1
+            payload["document_type"] = "runtime_status"
+
+            write_local_meeting_state(session_path, payload)
+
+            data = json.loads((session_path / STATE_FILENAME).read_text(encoding="utf-8"))
+            self.assertEqual(data["schema_version"], 1)
+            self.assertEqual(data["document_type"], "local_meeting_state")
+            self.assertEqual(data["task_status"], "processing")
+
     def test_overwrite_replaces_status_and_leaves_no_temp(self):
         with tempfile.TemporaryDirectory() as tmp:
             session_path = Path(tmp)

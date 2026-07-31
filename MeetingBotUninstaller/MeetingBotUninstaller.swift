@@ -16,6 +16,8 @@ private enum Constants {
         .appendingPathComponent("Library/Application Support", isDirectory: true)
     static let developerRoot = home
         .appendingPathComponent("Developer", isDirectory: true)
+    static let nativeRewriteRoot = developerRoot
+        .appendingPathComponent("meeting-bot-1.0-native", isDirectory: true)
     static let legacyInstallRoots = [
         home.appendingPathComponent("Library/Application Support/meetin-bot", isDirectory: true),
         home.appendingPathComponent("Library/Application Support/feishu-meeting-bot", isDirectory: true),
@@ -143,11 +145,50 @@ private enum PathTools {
         let components = value.components(separatedBy: invalid).filter { !$0.isEmpty }
         return components.joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    static func allocatedSize(of urls: [URL]) -> Int64 {
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .fileAllocatedSizeKey,
+            .totalFileAllocatedSizeKey,
+        ]
+        var total: Int64 = 0
+
+        for url in unique(urls) where exists(url) {
+            if !isDirectory(url) {
+                let values = try? url.resourceValues(forKeys: keys)
+                if values?.isSymbolicLink != true {
+                    total += Int64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
+                }
+                continue
+            }
+
+            let enumerator = FileManager.default.enumerator(
+                at: url,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsPackageDescendants],
+                errorHandler: { _, _ in true }
+            )
+            while let child = enumerator?.nextObject() as? URL {
+                let values = try? child.resourceValues(forKeys: keys)
+                guard values?.isRegularFile == true, values?.isSymbolicLink != true else {
+                    continue
+                }
+                total += Int64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
+            }
+        }
+        return total
+    }
 }
 
 private enum DevelopmentProtector {
     static func isProtectedInstallRoot(_ url: URL) -> Bool {
         let resolvedURL = PathTools.resolved(url)
+
+        if PathTools.overlaps(resolvedURL, PathTools.resolved(Constants.nativeRewriteRoot)) {
+            return true
+        }
 
         if let sourceRoot = currentSourceRoot(),
            PathTools.overlaps(resolvedURL, sourceRoot) {
@@ -254,20 +295,52 @@ private enum InstallationScanner {
 
     private static func findInstallRoots() -> [URL] {
         var candidates = [Constants.defaultInstallRoot] + Constants.legacyInstallRoots
+        var launchAgentRoots: [URL] = []
 
         if PathTools.exists(Constants.launchAgentPlist),
-           let launchAgentRoots = rootsFromLaunchAgent(Constants.launchAgentPlist) {
+           let discoveredRoots = rootsFromLaunchAgent(Constants.launchAgentPlist) {
+            launchAgentRoots = discoveredRoots
             candidates.append(contentsOf: launchAgentRoots)
         }
 
-        let knownRoots = [Constants.defaultInstallRoot] + Constants.legacyInstallRoots
         return PathTools.unique(candidates)
             .filter(PathTools.exists)
             .filter { !DevelopmentProtector.isProtectedInstallRoot($0) }
-            .filter { candidate in
-                knownRoots.contains { PathTools.resolved($0) == PathTools.resolved(candidate) }
-                    || isExclusiveCustomInstallRoot(candidate)
-            }
+            .filter { isRecognizedInstallRoot($0, launchAgentRoots: launchAgentRoots) }
+    }
+
+    private static func isRecognizedInstallRoot(_ candidate: URL, launchAgentRoots: [URL]) -> Bool {
+        guard hasInstallPayload(candidate) else {
+            return false
+        }
+
+        let resolvedCandidate = PathTools.resolved(candidate)
+        let knownRoots = [Constants.defaultInstallRoot] + Constants.legacyInstallRoots
+        let isKnownRoot = knownRoots.contains {
+            PathTools.resolved($0) == resolvedCandidate
+        }
+        if !isKnownRoot {
+            return isExclusiveCustomInstallRoot(candidate)
+        }
+
+        if hasValidOwnershipMarker(candidate) {
+            return true
+        }
+
+        let referencedByLaunchAgent = launchAgentRoots.contains {
+            PathTools.resolved($0) == resolvedCandidate
+        }
+        if referencedByLaunchAgent {
+            return true
+        }
+
+        let isApplicationSupportInstall = PathTools.isSubpath(
+            resolvedCandidate,
+            of: PathTools.resolved(Constants.applicationSupportRoot)
+        )
+        return isApplicationSupportInstall
+            && PathTools.exists(candidate.appendingPathComponent(".meetingbot-packaged-payload"))
+            && PathTools.exists(candidate.appendingPathComponent("payload-files.sha256"))
     }
 
     private static func isExclusiveCustomInstallRoot(_ candidate: URL) -> Bool {
@@ -287,13 +360,23 @@ private enum InstallationScanner {
             return false
         }
 
-        let marker = candidate.appendingPathComponent(installOwnershipMarker)
-        guard let markerValue = try? String(contentsOf: marker, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            markerValue == installOwnershipValue else {
+        guard hasValidOwnershipMarker(candidate) else {
             return false
         }
-        return PathTools.exists(candidate.appendingPathComponent("bot.py"))
+        return hasInstallPayload(candidate)
+    }
+
+    private static func hasValidOwnershipMarker(_ candidate: URL) -> Bool {
+        let marker = candidate.appendingPathComponent(installOwnershipMarker)
+        guard let markerValue = try? String(contentsOf: marker, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+        return markerValue == installOwnershipValue
+    }
+
+    private static func hasInstallPayload(_ candidate: URL) -> Bool {
+        PathTools.exists(candidate.appendingPathComponent("bot.py"))
             && PathTools.exists(candidate.appendingPathComponent("start_bot.sh"))
             && PathTools.exists(candidate.appendingPathComponent("scripts/install.sh"))
     }
@@ -376,21 +459,10 @@ private enum InstallationScanner {
     }
 
     private static func isMeetingBotApplication(_ url: URL) -> Bool {
-        guard PathTools.exists(url) else {
+        guard PathTools.exists(url), let bundle = Bundle(url: url) else {
             return false
         }
-        if url.lastPathComponent == "\(Constants.appName).app" || url.lastPathComponent == "Feishu Meeting Bot.app" {
-            return true
-        }
-        guard let bundle = Bundle(url: url) else {
-            return false
-        }
-        if bundle.bundleIdentifier == Constants.bundleIdentifier {
-            return true
-        }
-        let displayName = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-        let bundleName = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
-        return displayName == Constants.appName || bundleName == Constants.appName
+        return bundle.bundleIdentifier == Constants.bundleIdentifier
     }
 
     private static func applicationTitle(_ url: URL) -> String {
@@ -502,6 +574,30 @@ private enum InstallationScanner {
                 url: root.appendingPathComponent("library", isDirectory: true),
                 backupName: "library"
             )
+            appendDataDirectory(
+                &items,
+                title: "任务账本",
+                url: root.appendingPathComponent("runtime/tasks", isDirectory: true),
+                backupName: "runtime/tasks"
+            )
+            appendDataDirectory(
+                &items,
+                title: "会议完成事件",
+                url: root.appendingPathComponent("runtime/events", isDirectory: true),
+                backupName: "runtime/events"
+            )
+            appendDataDirectory(
+                &items,
+                title: "升级恢复备份",
+                url: root.appendingPathComponent("runtime/upgrade-backups", isDirectory: true),
+                backupName: "runtime/upgrade-backups"
+            )
+            appendDataDirectory(
+                &items,
+                title: "历史恢复备份",
+                url: root.appendingPathComponent("backups", isDirectory: true),
+                backupName: "backups"
+            )
             appendExisting(
                 &items,
                 title: "最近会议索引",
@@ -594,6 +690,8 @@ private final class UninstallerStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var completedMessage: String?
     @Published var showConfirmation = false
+    @Published var isPreparingConfirmation = false
+    @Published var managedDataBytes: Int64?
 
     var canUninstall: Bool {
         scan.hasFindings && !isWorking && (deleteData || destinationIsUsable)
@@ -608,6 +706,38 @@ private final class UninstallerStore: ObservableObject {
         operationLog = []
         errorMessage = nil
         completedMessage = nil
+        managedDataBytes = nil
+    }
+
+    func prepareConfirmation() {
+        guard canUninstall, !isPreparingConfirmation else {
+            return
+        }
+
+        let urls = scan.data.filter(\.canModify).map(\.url)
+        isPreparingConfirmation = true
+        Task.detached {
+            let bytes = PathTools.allocatedSize(of: urls)
+            await MainActor.run {
+                self.managedDataBytes = bytes
+                self.isPreparingConfirmation = false
+                self.showConfirmation = true
+            }
+        }
+    }
+
+    var managedDataSizeDescription: String {
+        guard let managedDataBytes else {
+            return "正在估算"
+        }
+        return ByteCountFormatter.string(fromByteCount: managedDataBytes, countStyle: .file)
+    }
+
+    var managedDataPathsDescription: String {
+        scan.data
+            .filter(\.canModify)
+            .map { "- \(PathTools.display($0.url))" }
+            .joined(separator: "\n")
     }
 
     func chooseDataDestination() {
@@ -681,18 +811,22 @@ private struct UninstallOptions {
 private final class UninstallRunner {
     private let scan: InstallationScan
     private let options: UninstallOptions
+    private let manageLiveService: Bool
     private let fileManager = FileManager.default
     private var failureCount = 0
     private(set) var logs: [String] = []
 
-    init(scan: InstallationScan, options: UninstallOptions) {
+    init(scan: InstallationScan, options: UninstallOptions, manageLiveService: Bool = true) {
         self.scan = scan
         self.options = options
+        self.manageLiveService = manageLiveService
     }
 
     func run() throws -> [String] {
-        terminateRunningApplication()
-        removeLaunchAgent()
+        if manageLiveService {
+            terminateRunningApplication()
+            removeLaunchAgent()
+        }
 
         if options.deleteData {
             removeItems(scan.data, label: "数据")
@@ -785,10 +919,13 @@ private final class UninstallRunner {
     }
 
     private func validateDataDestination(_ destination: URL) throws {
-        for root in scan.installRoots.map(\.url) where PathTools.isSubpath(destination, of: root) {
+        let resolvedDestination = PathTools.resolved(destination)
+        for root in scan.installRoots.map(\.url)
+        where PathTools.isSubpath(resolvedDestination, of: PathTools.resolved(root)) {
             throw UninstallError.invalidDestination("数据保留位置不能放在安装目录内：\(PathTools.display(root))")
         }
-        for item in scan.data where PathTools.isSubpath(destination, of: item.url) {
+        for item in scan.data
+        where PathTools.isSubpath(resolvedDestination, of: PathTools.resolved(item.url)) {
             throw UninstallError.invalidDestination("数据保留位置不能放在待移动的数据目录内部：\(PathTools.display(item.url))")
         }
     }
@@ -846,30 +983,91 @@ private final class UninstallRunner {
         let retainedEnvironment = options.deleteEnvironment ? [] : scan.environments.map(\.url)
 
         for root in scan.installRoots.map(\.url) where PathTools.exists(root) {
-            if retainedEnvironment.filter({ PathTools.isSubpath($0, of: root) }).isEmpty {
-                removeURL(root, title: "安装目录")
-                continue
+            removePayloadFiles(in: root)
+
+            let hasRetainedEnvironment = retainedEnvironment.contains {
+                PathTools.isSubpath($0, of: root)
+            }
+            let generatedEntries = [
+                ".meetingbot-packaged-payload",
+                ".meetingbot-install-root",
+                "payload-files.sha256",
+                "release-manifest.json",
+                "release-manifest.sig",
+                ".pytest_cache",
+                "__pycache__",
+                "tmp",
+                "dist",
+            ]
+            for relativePath in generatedEntries {
+                removeURL(root.appendingPathComponent(relativePath), title: "应用生成文件")
+            }
+            if !hasRetainedEnvironment {
+                removeURL(root.appendingPathComponent("runtime", isDirectory: true), title: "运行时目录")
             }
 
-            let children = (try? fileManager.contentsOfDirectory(
-                at: root,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: []
-            )) ?? []
-
-            for child in children {
-                if retainedEnvironment.contains(where: { PathTools.isSubpath($0, of: child) || PathTools.isSubpath(child, of: $0) }) {
-                    log("保留环境目录：\(PathTools.display(child))")
-                    continue
-                }
-                removeURL(child, title: "安装目录内容")
-            }
+            pruneEmptyDirectories(in: root)
 
             if directoryIsEmpty(root) {
                 removeURL(root, title: "安装目录")
             } else {
-                log("安装目录仍保留，因为其中包含用户选择保留的环境文件：\(PathTools.display(root))")
+                log("安装目录仍保留，因为其中包含保留环境或无法证明属于应用的文件：\(PathTools.display(root))")
             }
+        }
+    }
+
+    private func removePayloadFiles(in root: URL) {
+        let manifest = root.appendingPathComponent("payload-files.sha256")
+        guard let contents = try? String(contentsOf: manifest, encoding: .utf8) else {
+            log("未找到安装载荷清单，跳过无法确认所有权的旧安装文件：\(PathTools.display(root))")
+            return
+        }
+
+        var removedCount = 0
+        for line in contents.split(separator: "\n") {
+            guard let separator = line.range(of: "  ") else {
+                continue
+            }
+            let relativePath = String(line[separator.upperBound...])
+            let components = NSString(string: relativePath).pathComponents
+            guard !relativePath.isEmpty,
+                  !relativePath.hasPrefix("/"),
+                  !components.contains("..") else {
+                continue
+            }
+            let target = root.appendingPathComponent(relativePath).standardizedFileURL
+            guard PathTools.isSubpath(target, of: root), PathTools.exists(target) else {
+                continue
+            }
+            do {
+                try fileManager.removeItem(at: target)
+                removedCount += 1
+            } catch {
+                failureCount += 1
+                log("删除载荷文件失败 \(PathTools.display(target))：\(error.localizedDescription)")
+            }
+        }
+        log("已按载荷清单删除 \(removedCount) 个应用文件。")
+    }
+
+    private func pruneEmptyDirectories(in root: URL) {
+        let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: []
+        )
+        var directories: [URL] = []
+        while let candidate = enumerator?.nextObject() as? URL {
+            let values = try? candidate.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if values?.isSymbolicLink == true {
+                enumerator?.skipDescendants()
+            } else if values?.isDirectory == true {
+                directories.append(candidate)
+            }
+        }
+        for directory in directories.sorted(by: { $0.path.count > $1.path.count })
+        where directoryIsEmpty(directory) {
+            try? fileManager.removeItem(at: directory)
         }
     }
 
@@ -896,6 +1094,98 @@ private final class UninstallRunner {
 
     private func log(_ message: String) {
         logs.append(message)
+    }
+}
+
+private enum UninstallerSelfTest {
+    static func run() throws {
+        let fileManager = FileManager.default
+        let testRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("meetingbot-uninstaller-selftest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: testRoot) }
+        try fileManager.createDirectory(at: testRoot, withIntermediateDirectories: true)
+
+        try verifyUnknownFilesArePreserved(in: testRoot.appendingPathComponent("preserve", isDirectory: true))
+        try verifyOwnedRootIsRemoved(in: testRoot.appendingPathComponent("remove", isDirectory: true))
+    }
+
+    private static func verifyUnknownFilesArePreserved(in root: URL) throws {
+        try createFixture(at: root, includeUnknownFile: true)
+        let runner = makeRunner(for: root)
+        _ = try runner.run()
+
+        guard PathTools.exists(root.appendingPathComponent("user-notes.txt")),
+              !PathTools.exists(root.appendingPathComponent("bot.py")),
+              PathTools.exists(root) else {
+            throw UninstallError.partialFailure("卸载器自检失败：未知文件未被正确保留。")
+        }
+    }
+
+    private static func verifyOwnedRootIsRemoved(in root: URL) throws {
+        try createFixture(at: root, includeUnknownFile: false)
+        let runner = makeRunner(for: root)
+        _ = try runner.run()
+
+        guard !PathTools.exists(root) else {
+            throw UninstallError.partialFailure("卸载器自检失败：纯应用目录未被清理。")
+        }
+    }
+
+    private static func createFixture(at root: URL, includeUnknownFile: Bool) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: root.appendingPathComponent("scripts", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let ownedFiles = ["bot.py", "start_bot.sh", "scripts/install.sh"]
+        for relativePath in ownedFiles {
+            try "fixture\n".write(
+                to: root.appendingPathComponent(relativePath),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+        let manifest = ownedFiles
+            .map { "0000000000000000000000000000000000000000000000000000000000000000  \($0)" }
+            .joined(separator: "\n") + "\n"
+        try manifest.write(
+            to: root.appendingPathComponent("payload-files.sha256"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "meeting-bot-exclusive-v1\n".write(
+            to: root.appendingPathComponent(".meetingbot-install-root"),
+            atomically: true,
+            encoding: .utf8
+        )
+        if includeUnknownFile {
+            try "keep me\n".write(
+                to: root.appendingPathComponent("user-notes.txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+    }
+
+    private static func makeRunner(for root: URL) -> UninstallRunner {
+        var scan = InstallationScan()
+        scan.installRoots = [
+            ScanItem(
+                title: "自检安装目录",
+                detail: root.path,
+                url: root,
+                kind: .installRoot
+            )
+        ]
+        return UninstallRunner(
+            scan: scan,
+            options: UninstallOptions(
+                deleteEnvironment: true,
+                deleteData: true,
+                dataDestination: root.deletingLastPathComponent().appendingPathComponent("backup")
+            ),
+            manageLiveService: false
+        )
     }
 }
 
@@ -934,6 +1224,31 @@ private enum UninstallError: LocalizedError {
 
 @main
 private struct MeetingBotUninstallerApp: App {
+    init() {
+        if CommandLine.arguments.contains("--self-test") {
+            do {
+                try UninstallerSelfTest.run()
+                print("卸载器自检通过。")
+                fflush(stdout)
+                Darwin.exit(EXIT_SUCCESS)
+            } catch {
+                fputs("卸载器自检失败：\(error.localizedDescription)\n", stderr)
+                fflush(stderr)
+                Darwin.exit(EXIT_FAILURE)
+            }
+        }
+        guard CommandLine.arguments.contains("--audit-scan") else {
+            return
+        }
+        let scan = InstallationScanner.scan()
+        for item in scan.allItems {
+            let action = item.canModify ? "managed" : "preserved"
+            print("\(item.kind.rawValue)\t\(action)\t\(item.url.path)")
+        }
+        fflush(stdout)
+        Darwin.exit(EXIT_SUCCESS)
+    }
+
     var body: some Scene {
         WindowGroup {
             UninstallerView()
@@ -1159,12 +1474,12 @@ private struct UninstallerView: View {
             }
             .disabled(store.isWorking)
             Button(role: .destructive) {
-                store.showConfirmation = true
+                store.prepareConfirmation()
             } label: {
-                Label("开始卸载", systemImage: "trash")
+                Label(store.isPreparingConfirmation ? "正在核对数据..." : "开始卸载", systemImage: "trash")
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(!store.canUninstall)
+            .disabled(!store.canUninstall || store.isPreparingConfirmation)
         }
         .padding(24)
     }
@@ -1180,9 +1495,9 @@ private struct UninstallerView: View {
         var parts = ["将停止后台服务并删除会议纪要助手 App 与安装文件。"]
         parts.append(store.deleteEnvironment ? "Python 环境和依赖缓存会被删除。" : "Python 环境和依赖缓存会保留在原安装目录。")
         if store.deleteData {
-            parts.append("应用管理的会议数据、配置和日志会被删除。")
+            parts.append("应用管理的数据、配置和日志会被删除，预计占用 \(store.managedDataSizeDescription)：\n\(store.managedDataPathsDescription)")
         } else {
-            parts.append("应用管理的会议数据、配置和日志会移动到：\(store.dataDestination.path)")
+            parts.append("应用管理的数据、配置和日志会移动到：\(store.dataDestination.path)\n预计占用 \(store.managedDataSizeDescription)，来源为：\n\(store.managedDataPathsDescription)")
         }
         if store.scan.data.contains(where: { !$0.canModify }) {
             parts.append("安装目录外的自定义数据目录会原地保留，不会移动或删除。")

@@ -8,6 +8,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GENERATOR = PROJECT_ROOT / "scripts" / "generate_release_manifest.py"
 APP_BUILD_SCRIPT = PROJECT_ROOT / "MeetingBotMenuBarApp" / "build_release_app.sh"
+UNINSTALLER_BUILD_SCRIPT = PROJECT_ROOT / "MeetingBotUninstaller" / "build_uninstaller_app.sh"
 
 
 def create_payload(
@@ -244,6 +245,39 @@ def test_distribution_build_security_preflight_fails_closed_without_credentials(
 
     result = subprocess.run(
         ["/bin/bash", str(APP_BUILD_SCRIPT), "--security-preflight-only"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "正式构建必须配置" in result.stderr
+
+
+def test_uninstaller_development_security_preflight_succeeds():
+    environment = os.environ.copy()
+    environment["MEETINGBOT_BUILD_SECURITY_MODE"] = "development"
+
+    result = subprocess.run(
+        ["/bin/bash", str(UNINSTALLER_BUILD_SCRIPT), "--security-preflight-only"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "development"
+
+
+def test_uninstaller_distribution_preflight_fails_closed_without_identity():
+    environment = os.environ.copy()
+    environment.pop("MEETINGBOT_CODESIGN_IDENTITY", None)
+    environment["MEETINGBOT_BUILD_SECURITY_MODE"] = "distribution"
+
+    result = subprocess.run(
+        ["/bin/bash", str(UNINSTALLER_BUILD_SCRIPT), "--security-preflight-only"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,

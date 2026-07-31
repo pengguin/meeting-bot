@@ -88,7 +88,9 @@ resolve_tool_path() {
       printf '%s\n' "$configured_path"
       return
     fi
-    command_name="$configured_path"
+    if [[ "$configured_path" != */* ]]; then
+      command_name="$configured_path"
+    fi
   fi
 
   if command -v "$command_name" >/dev/null 2>&1; then
@@ -96,7 +98,23 @@ resolve_tool_path() {
     return
   fi
 
-  for candidate in "/opt/homebrew/bin/$command_name" "/usr/local/bin/$command_name"; do
+  for candidate in \
+    "$HOME/.local/bin/$command_name" \
+    "$HOME/bin/$command_name" \
+    "$HOME/.volta/bin/$command_name" \
+    "$HOME/.bun/bin/$command_name" \
+    "$HOME/Library/pnpm/$command_name" \
+    "/opt/homebrew/bin/$command_name" \
+    "/usr/local/bin/$command_name"; do
+    [[ -x "$candidate" ]] && {
+      printf '%s\n' "$candidate"
+      return
+    }
+  done
+
+  for candidate in \
+    "$HOME"/.nvm/versions/node/*/bin/"$command_name" \
+    "$HOME"/.npm/_npx/*/node_modules/.bin/"$command_name"; do
     [[ -x "$candidate" ]] && {
       printf '%s\n' "$candidate"
       return
@@ -206,4 +224,6 @@ main() {
   fi
 }
 
-main "$@"
+if [[ "${MEETINGBOT_DOCTOR_LIBRARY_ONLY:-0}" != "1" ]]; then
+  main "$@"
+fi
